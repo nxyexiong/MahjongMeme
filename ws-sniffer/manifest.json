@@ -1,0 +1,20 @@
+{
+  "name": "websocket sniffer",
+  "version": "1",
+  "manifest_version": 3,
+  "minimum_chrome_version": "103.0",
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [{
+    "resources": ["injected.js", "wsHook.js"],
+    "matches": ["<all_urls>"]
+  }],
+  "content_security_policy": {
+    "extension_pages": "default-src 'self' 'wasm-unsafe-eval';"
+  }
+}
