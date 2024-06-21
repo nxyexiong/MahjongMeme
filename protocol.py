@@ -45,13 +45,15 @@ class Protocol:
         elif msg_type == 3: # response
             ret.type = 'response'
             ret.seq = data[1] + data[2] * 256
+            header = header_pb2.Header()
+            header.ParseFromString(data[3:])
             output_type = self.seq_to_rsp.get(ret.seq, None)
             if output_type:
                 self.seq_to_rsp.pop(ret.seq)
                 ret.name = output_type.DESCRIPTOR.full_name
                 try:
                     ret.data = output_type()
-                    ret.data.ParseFromString(data[3:])
+                    ret.data.ParseFromString(header.data)
                 except:
                     ret.data = None
         return ret
