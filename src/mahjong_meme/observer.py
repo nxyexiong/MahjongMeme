@@ -237,9 +237,22 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
     liqi = match.get("liqi") or []
     my_seat = match.get("my_seat")
 
-    # Flatten visibility: every meld tile + every discard from every seat.
+    # Pull MY called sets separately — the trainer treats each as a locked
+    # complete set when computing shanten. Visibility comes from the
+    # trainer; we just pass the tile lists.
+    my_melds_raw = (
+        melds[my_seat]
+        if my_seat is not None and 0 <= my_seat < len(melds)
+        else []
+    ) or []
+    my_melds: list[list[str]] = [list(m.get("tiles") or []) for m in my_melds_raw]
+
+    # Flatten visibility for everyone EXCEPT my own melds (the trainer adds
+    # those itself). Opponents' melds and all discards stay in visible.
     flat_visible: list[str] = []
-    for seat_melds in melds:
+    for seat_idx, seat_melds in enumerate(melds):
+        if seat_idx == my_seat:
+            continue
         for meld in seat_melds or []:
             flat_visible.extend(meld.get("tiles") or [])
     for seat_discards in discards:
@@ -275,6 +288,7 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
         ev = evaluate_turn(
             hand=hand,
             visible_tiles=flat_visible,
+            my_melds=my_melds,
             dora_indicators=dora_indicators,
             opponents=opponents,
         )

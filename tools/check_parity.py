@@ -140,10 +140,29 @@ def main() -> int:
         if exp is None:
             failures.append(f"{case['name']}: no expected data")
             continue
-        for key in ("shanten", "shanten_standard", "current_ukeire", "best_discard_index"):
+        for key in ("shanten", "shanten_standard", "current_ukeire"):
             if got.get(key) != exp.get(key):
                 failures.append(
                     f"{case['name']}.{key}: expected {exp.get(key)!r}, got {got.get(key)!r}"
+                )
+        # best_discard_index check: when several slots share the maximum
+        # ukeire, evaluate_best_discard's tie-break may end with a
+        # `random.choice` over the surviving slots, so JS and Python need
+        # not pick the same one. Accept any slot whose ukeire matches the
+        # JS-chosen slot's ukeire.
+        gb = got.get("best_discard_index")
+        eb = exp.get("best_discard_index")
+        if (gb is None) != (eb is None):
+            failures.append(
+                f"{case['name']}.best_discard_index: expected {eb!r}, got {gb!r}"
+            )
+        elif gb is not None and exp["per_discard"] is not None:
+            exp_val = exp["per_discard"][eb]["value"] if eb >= 0 else None
+            got_val = got["per_discard"][gb]["value"] if gb >= 0 else None
+            if exp_val != got_val:
+                failures.append(
+                    f"{case['name']}.best_discard_index: expected slot {eb} "
+                    f"with ukeire {exp_val}, got slot {gb} with ukeire {got_val}"
                 )
         if got["per_discard"] is not None and exp["per_discard"] is not None:
             for i in range(HAND_SIZE):

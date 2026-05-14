@@ -125,6 +125,16 @@
         const me = O.mainrole;
         const hand = me && Array.isArray(me.hand) ? me.hand.map(t => tileStr(t.val)) : null;
         const players = Array.isArray(O.players) ? O.players : [];
+        // Mahjong Soul indexes `O.players[]` by LOCAL position (0=me,
+        // 1=shimocha, 2=toimen, 3=kamicha) but `O.seat` is the SERVER
+        // seat (E/S/W/N = 0..3). Find me by reference so per-seat arrays
+        // (melds/discards/liqi/scores) and my_seat use the same indexing.
+        let my_local = 0;
+        if (me) {
+          for (let i = 0; i < players.length; i++) {
+            if (players[i] === me) { my_local = i; break; }
+          }
+        }
         const scores = [], melds = [], discards = [], liqi = [];
         for (let i = 0; i < players.length; i++) {
           const p = players[i];
@@ -144,8 +154,26 @@
           else discards.push([]);
           liqi.push(!!(p && p.lichi));
         }
+        // `O.lastpai_seat` is the SERVER seat of the discarder; translate
+        // back to local position so it indexes consistently with our
+        // arrays. The relation server_seat ↔ local_position is:
+        //   local = (server_seat - my_server_seat + N) % N
+        // We have my_server_seat = O.seat and my_local known, so:
+        let last_discard = null;
+        if (O.lastqipai && O.lastqipai.val) {
+          const n = players.length || 4;
+          const myServer = typeof O.seat === 'number' ? O.seat : 0;
+          const srvDiscarder = typeof O.lastpai_seat === 'number' ? O.lastpai_seat : 0;
+          const localDiscarder = ((srvDiscarder - myServer + n) % n + my_local) % n;
+          last_discard = {
+            seat: localDiscarder,
+            tile: tileStr(O.lastqipai.val),
+            is_moqie: !!O.lastqipai.ismoqie,
+          };
+        }
         matchState = {
-          my_seat: O.seat,
+          my_seat: my_local,
+          my_server_seat: typeof O.seat === 'number' ? O.seat : null,
           scores,
           chang: O.index_change,
           ju: O.index_ju,
@@ -156,9 +184,7 @@
           melds,
           discards,
           liqi,
-          last_discard: O.lastqipai && O.lastqipai.val
-            ? { seat: O.lastpai_seat, tile: tileStr(O.lastqipai.val), is_moqie: !!O.lastqipai.ismoqie }
-            : null,
+          last_discard,
           can_discard: !!(me && me.can_discard),
         };
       }
