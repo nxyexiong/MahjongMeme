@@ -31,7 +31,22 @@
         if (!O || !O.mainrole) return { ok: false, err: 'no match controller' };
         const me = O.mainrole;
         if (!me.can_discard) return { ok: false, err: 'cannot discard right now' };
-        function ts(v) { return v.index + ['m','p','s','z'][v.type] + (v.dora ? '*' : ''); }
+        function ts(v) {
+          // Same canonical converter as state.js: Tile.val.toString().
+          let val = v;
+          if (val && typeof val === 'object' && val.val) val = val.val;
+          try {
+            if (val && typeof val.toString === 'function') {
+              const s = val.toString();
+              if (typeof s === 'string' && /^[0-9][mpsz]$/.test(s)) {
+                const d = s.charAt(0), suit = s.charAt(1);
+                if (d === '0' && suit !== 'z') return '5' + suit + '*';
+                return s;
+              }
+            }
+          } catch (e) {}
+          return null;
+        }
         let pick = null;
         if (act.slot !== undefined && act.slot !== null) pick = me.hand[act.slot];
         else if (act.tile) {

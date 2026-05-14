@@ -61,9 +61,28 @@
       }
       function tileStr(v) {
         if (!v) return null;
-        const suit = ['m','p','s','z'][v.type];
-        if (suit === undefined) return null;
-        return v.index + suit + (v.dora ? '*' : '');
+        // Use Mahjong Soul's canonical Tile.val.toString() — it knows the
+        // internal `type` encoding (which is NOT `0=m, 1=p, 2=s, 3=z` —
+        // hand-mapping `['m','p','s','z'][v.type]` mis-classified pin as
+        // man on some builds). toString() returns e.g. "5p" / "3z" / "0m"
+        // (Tenhou-style: "0m"/"0p"/"0s" = red five). We normalize red
+        // fives to our "5m*"/"5p*"/"5s*" form for downstream consistency.
+        // Accepts either a tile-wrapping object (has .val), a val object,
+        // or a string already in tile form.
+        let val = v;
+        if (typeof val === 'object' && val.val) val = val.val;
+        try {
+          if (val && typeof val.toString === 'function') {
+            const s = val.toString();
+            if (typeof s === 'string' && /^[0-9][mpsz]$/.test(s)) {
+              const digit = s.charAt(0);
+              const suit = s.charAt(1);
+              if (digit === '0' && suit !== 'z') return '5' + suit + '*';
+              return s;
+            }
+          }
+        } catch (e) {}
+        return null;
       }
 
       const popViews = visibleNodes((n) => /^pop_/.test(n.name || ''));

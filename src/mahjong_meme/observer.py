@@ -195,14 +195,118 @@ def _short(value: Any, limit: int = 400) -> str:
 
 
 def print_state(state: dict[str, Any], *, log=print) -> None:
-    """Pretty-print a full state snapshot."""
+    """Pretty-print a full state snapshot, with trainer advice when applicable."""
     log("=" * 72)
     log(f"[mj] STATE  scene={state.get('scene')}  "
         f"needs_my_action={state.get('needs_my_action')}  "
         f"event_seq={state.get('event_seq')}")
     log("-" * 72)
     log(json.dumps(state, ensure_ascii=False, indent=2, default=str))
+
+    advice = _trainer_advice(state)
+    if advice:
+        log("-" * 72)
+        log(advice)
     log("=" * 72)
+
+
+def _trainer_advice(state: dict[str, Any]) -> str | None:
+    """Run the trainer engine on the current state when it's a discard turn.
+
+    Returns a multi-line text block, or None when no advice is applicable
+    (e.g. not a match scene, not the player's turn, hand not visible).
+    """
+    actionable = state.get("actionable") or {}
+    if actionable.get("kind") != "discard":
+        return None
+    match = state.get("match") or {}
+    hand = match.get("hand")
+    if not hand:
+        return None
+
+    # Import lazily so a missing trainer (shouldn't happen, but…) doesn't
+    # break the entire observer loop.
+    try:
+        from mahjong_meme.trainer import OpponentInfo, evaluate_turn
+    except Exception as e:
+        return f"[mj.trainer] unavailable: {e!r}"
+
+    melds = match.get("melds") or []
+    discards = match.get("discards") or []
+    dora_indicators = match.get("dora_indicators") or []
+    liqi = match.get("liqi") or []
+    my_seat = match.get("my_seat")
+
+    # Flatten visibility: every meld tile + every discard from every seat.
+    flat_visible: list[str] = []
+    for seat_melds in melds:
+        for meld in seat_melds or []:
+            flat_visible.extend(meld.get("tiles") or [])
+    for seat_discards in discards:
+        flat_visible.extend(seat_discards or [])
+
+    opponents: list = []
+    n_seats = max(len(discards), len(liqi), 4)
+    for seat in range(n_seats):
+        if seat == my_seat:
+            continue
+        seat_discards = discards[seat] if seat < len(discards) else []
+        in_riichi = bool(liqi[seat]) if seat < len(liqi) else False
+        riichi_tile: str | None = None
+        tiles_after: list[str] = []
+        if in_riichi and seat_discards:
+            # We can't know the exact riichi-tile index without per-tile
+            # metadata; conservatively, assume the LAST riichi declaration
+            # discard. The state.js doesn't currently mark it — so we just
+            # treat all post-riichi discards (we don't know the split) as
+            # additional safety-tiles. Use the most recent tile as the
+            # declarative one.
+            riichi_tile = seat_discards[-1]
+            tiles_after = list(seat_discards)
+        opponents.append(
+            OpponentInfo(
+                discards=list(seat_discards),
+                riichi_tile=riichi_tile,
+                tiles_after_riichi=tiles_after,
+            )
+        )
+
+    try:
+        ev = evaluate_turn(
+            hand=hand,
+            visible_tiles=flat_visible,
+            dora_indicators=dora_indicators,
+            opponents=opponents,
+        )
+    except Exception as e:
+        return f"[mj.trainer] evaluation failed: {e!r}"
+
+    lines = []
+    lines.append(
+        f"[mj.trainer] shanten={ev.shanten} (std={ev.shanten_standard} "
+        f"chii={ev.shanten_chiitoi} kokushi={ev.shanten_kokushi})  "
+        f"dora={ev.dora_tiles}"
+    )
+    if ev.recommended_discard:
+        lines.append(
+            f"[mj.trainer] recommended discard: {ev.recommended_discard}  "
+            f"-> {ev.current_ukeire} ukeire after"
+        )
+    # Top 5 by ukeire.
+    if ev.discards:
+        lines.append("[mj.trainer] top discards:")
+        for d in ev.discards[:5]:
+            marker = "★" if d.is_recommended else " "
+            safety = (
+                "  safety=" + str(d.safety_per_opponent)
+                if d.safety_per_opponent
+                else ""
+            )
+            lines.append(
+                f"  {marker} {d.tile:4} ukeire={d.ukeire_count:3}  "
+                f"tiles={d.ukeire_tiles}{safety}"
+            )
+    return "\n".join(lines)
 
 
 def print_events(events: list[dict[str, Any]], *, log=print) -> None:
@@ -286,10 +390,24 @@ def run(
                 last_state is None or last_state.get("scene") != scene
             )
 
-            # needs_my_action rising edge: print full state.
+            # needs_my_action rising edge OR actionable-kind change: print
+            # a full snapshot. The kind-change case catches transitions like
+            # `call_window` → `discard` (after passing a chi opportunity)
+            # where needs_my_action stays True the whole time so there's no
+            # rising edge.
             needs = bool(state.get("needs_my_action"))
             prev_needs = bool(last_state and last_state.get("needs_my_action"))
+            cur_kind = (state.get("actionable") or {}).get("kind")
+            prev_kind = (
+                (last_state.get("actionable") or {}).get("kind") if last_state else None
+            )
+            should_print = False
             if needs and not prev_needs:
+                should_print = True
+            elif needs and cur_kind != prev_kind:
+                # Kind transition while still needing input — fresh decision.
+                should_print = True
+            if should_print:
                 print_state(state, log=log)
             elif scene_changed and last_state is not None:
                 log(f"[mj] scene → {scene}")
