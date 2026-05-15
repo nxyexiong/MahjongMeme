@@ -4,7 +4,11 @@ from __future__ import annotations
 import argparse
 import sys
 
-from mahjong_meme.browser import launch_browser
+from mahjong_meme.browser import (
+    DEFAULT_WINDOW_SIZE,
+    default_profile_dir,
+    launch_browser,
+)
 from mahjong_meme.observer import GAME_URL, run
 
 
@@ -12,8 +16,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mahjong-meme",
         description=(
-            "Launch a Chromium-family browser with a clean profile + remote "
-            "debug port, attach via CDP, and stream Mahjong Soul match state."
+            "Launch a Chromium-family browser with a persistent profile + "
+            "remote debug port, attach via CDP, and stream Mahjong Soul "
+            "match state."
         ),
     )
     p.add_argument(
@@ -34,6 +39,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--url",
         default=GAME_URL,
         help=f"Initial URL. Default: {GAME_URL}",
+    )
+    p.add_argument(
+        "--profile-dir",
+        default=None,
+        help="Path to the browser user-data dir to use. Defaults to a "
+        "persistent per-user directory (so cookies/login survive between "
+        "runs). Use --temp-profile to override with a fresh throwaway.",
+    )
+    p.add_argument(
+        "--temp-profile",
+        action="store_true",
+        help="Use a fresh temp profile dir for this run (does NOT persist).",
+    )
+    p.add_argument(
+        "--window-size",
+        default=DEFAULT_WINDOW_SIZE,
+        help=f"Initial window size 'W,H'. Default: {DEFAULT_WINDOW_SIZE}. "
+        "Pass an empty string to leave it unset.",
     )
     p.add_argument(
         "--poll-interval",
@@ -58,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="ARG",
         help="Extra command-line flag to pass to the browser. May be "
-        "repeated. E.g. --extra-arg=--window-size=1600,900",
+        "repeated. E.g. --extra-arg=--disable-gpu",
     )
     return p
 
@@ -70,17 +93,29 @@ def main(argv: list[str] | None = None) -> int:
         cdp_url = f"http://127.0.0.1:{args.port}"
         print(f"[mj] attaching to existing browser at {cdp_url}")
     else:
+        if args.temp_profile:
+            profile_arg: object = "TEMP"
+        elif args.profile_dir:
+            profile_arg = args.profile_dir
+        else:
+            profile_arg = default_profile_dir(args.browser)
+        window = args.window_size if args.window_size else None
         b = launch_browser(
             args.browser,
             port=args.port,
             initial_url=args.url,
             extra_args=args.extra_arg,
+            user_data_dir=profile_arg,
+            window_size=window,
         )
         cdp_url = b.cdp_url
         print(f"[mj] launched {b.executable}")
         print(f"[mj]   pid={b.process.pid}  port={b.port}")
-        print(f"[mj]   profile={b.user_data_dir}  (temp; delete after use)")
-        print(f"[mj]   cdp={cdp_url}")
+        kind = "temp" if args.temp_profile else "persistent"
+        print(f"[mj]   profile ({kind}) = {b.user_data_dir}")
+        if window:
+            print(f"[mj]   window-size = {window}")
+        print(f"[mj]   cdp = {cdp_url}")
 
     try:
         run(

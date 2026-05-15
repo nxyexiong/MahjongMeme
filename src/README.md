@@ -1,9 +1,9 @@
 # mahjong-meme (Python)
 
-Launches a Chromium-family browser with a clean profile + remote debug port,
-attaches via CDP, navigates to Mahjong Soul, injects the observer scripts,
-and streams live state. When the game asks for your input, the full state is
-printed to stdout as JSON.
+Launches a Chromium-family browser with a persistent profile + remote debug
+port, attaches via CDP, navigates to Mahjong Soul, injects the observer
+scripts, and streams live state. When the game asks for your input, the full
+state is printed to stdout as JSON.
 
 ## Install
 
@@ -24,7 +24,7 @@ The venv's `python.exe` and the entry-point shim `mahjong-meme.exe` work
 without activating the venv:
 
 ```powershell
-# Default: Chrome
+# Default: Chrome, persistent profile, 1280x720 window
 .\.venv\Scripts\mahjong-meme.exe
 
 # Or pick another browser
@@ -32,8 +32,14 @@ without activating the venv:
 .\.venv\Scripts\mahjong-meme.exe --browser brave
 .\.venv\Scripts\mahjong-meme.exe --browser path/to/chrome.exe
 
-# Different debug port, extra flags, etc.
-.\.venv\Scripts\mahjong-meme.exe --port 9333 --extra-arg=--window-size=1600,900
+# Resize the window or use a different port
+.\.venv\Scripts\mahjong-meme.exe --window-size 1600,900 --port 9333
+
+# Use a custom profile dir (e.g. one per Mahjong Soul account)
+.\.venv\Scripts\mahjong-meme.exe --profile-dir D:\mj-profiles\alt
+
+# Don't persist anything — fresh profile each run
+.\.venv\Scripts\mahjong-meme.exe --temp-profile
 ```
 
 If you'd rather activate the venv first (so you can just type
@@ -42,19 +48,32 @@ If you'd rather activate the venv first (so you can just type
 What happens:
 
 1. The chosen browser is launched as a child process with
-   `--remote-debugging-port=<port>` and a fresh `--user-data-dir` in a temp
-   directory (so it doesn't touch your normal profile). The Mahjong Soul URL
-   is opened in the first tab.
+   `--remote-debugging-port=<port>`, a **persistent `--user-data-dir`** under
+   `%LOCALAPPDATA%\mahjong-meme\profiles\<browser>` (macOS/Linux equivalents
+   apply), and `--window-size=1280,720`. The Mahjong Soul URL is opened in
+   the first tab.
 2. The script attaches via CDP (`http://127.0.0.1:<port>`), grabs the page,
    and waits for Laya (`window.Laya.stage`) to finish booting.
 3. The three observer scripts (`init.js` → `hook_events.js` → `state.js`)
    are injected. Re-injected automatically if the page is reloaded.
 4. If you're not logged in yet, the script polls until `GameMgr.Inst.logined`
-   is true. Log in normally in the browser window.
+   is true. Log in normally in the browser window. **The login persists
+   across runs** because the profile is reused.
 5. From that point on, `__mj.computeState()` is polled ~once per second.
    Every time `needs_my_action` flips from false to true (your turn,
    chi/pon prompt, modal, lobby decision), the full state is pretty-printed.
    Whenever `event_seq` advances, the new wire events are printed too.
+
+## Profile location
+
+| OS      | Default profile dir                                                   |
+|---------|-----------------------------------------------------------------------|
+| Windows | `%LOCALAPPDATA%\mahjong-meme\profiles\<browser>`                      |
+| macOS   | `~/Library/Application Support/mahjong-meme/profiles/<browser>`       |
+| Linux   | `~/.local/share/mahjong-meme/profiles/<browser>`                      |
+
+To reset the profile, delete that directory. To run multiple accounts in
+parallel, give each its own `--profile-dir` AND a unique `--port`.
 
 ## Project layout
 
@@ -78,13 +97,10 @@ NOT reference `skills/mahjong-soul/` — those copies are independent.
 
 ## Notes
 
-- An "empty profile" means a fresh temp directory passed as
-  `--user-data-dir`. Cookies, extensions, and sign-ins from your normal
-  browser are not touched, but you'll need to log into Mahjong Soul once
-  per run.
+- The default profile dir is shared with no other Chrome instance. Don't
+  open the same `--profile-dir` from two `mahjong-meme` runs at once.
 - The script does NOT close the browser on exit — Ctrl-C the script,
-  close the browser yourself when done. Temp profile directories
-  accumulate; clean periodically.
+  close the browser yourself when done.
 - This is a read-only observer. It does not click, discard, or send any
   packets. Strategy / play is up to you.
 

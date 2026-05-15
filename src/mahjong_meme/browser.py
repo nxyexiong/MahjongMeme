@@ -116,21 +116,62 @@ class LaunchedBrowser:
         return self.process.wait()
 
 
+def default_profile_dir(browser_alias: str = "chrome") -> Path:
+    """Return a stable per-user profile directory for the given browser.
+
+    Profile is kept under the OS-standard local-application-data area so
+    cookies / login persist across runs:
+      Windows: %LOCALAPPDATA%\\mahjong-meme\\profiles\\<browser>
+      macOS:   ~/Library/Application Support/mahjong-meme/profiles/<browser>
+      Linux:   ~/.local/share/mahjong-meme/profiles/<browser>
+    """
+    safe = "".join(c for c in browser_alias.lower() if c.isalnum() or c in "-_") or "browser"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return base / "mahjong-meme" / "profiles" / safe
+
+
+DEFAULT_WINDOW_SIZE = "1280,720"
+
+
 def launch_browser(
     browser: str = "chrome",
     *,
     port: int = 9222,
     initial_url: str = "about:blank",
     extra_args: list[str] | None = None,
+    user_data_dir: Path | str | None = None,
+    window_size: str | None = DEFAULT_WINDOW_SIZE,
 ) -> LaunchedBrowser:
-    """Launch the chosen browser with a fresh profile + remote debugging.
+    """Launch the chosen browser with a (persistent) profile + remote debugging.
 
-    Returns a LaunchedBrowser handle. The temp profile directory is created
-    eagerly and is NOT auto-removed; the caller / user is responsible for
-    cleanup once the browser is closed.
+    By default uses `default_profile_dir(browser)` so cookies, login state,
+    and any per-site settings persist across runs. Pass `user_data_dir=None`
+    explicitly via the CLI `--temp-profile` flag to opt into a fresh
+    throwaway profile.
+
+    `window_size` is passed as `--window-size=W,H` and only takes effect
+    when the user's profile doesn't already have a saved window geometry.
+    Pass `window_size=None` to leave it unset.
+
+    The browser process is detached so it survives Ctrl-C of the agent.
     """
     exe = resolve_executable(browser)
-    profile = Path(tempfile.mkdtemp(prefix="mahjong-meme-profile-"))
+    if user_data_dir is None:
+        # Sentinel value "TEMP" requests a throwaway profile; otherwise
+        # callers pass an explicit Path / str (or omit the kwarg to get
+        # the persistent default).
+        profile = default_profile_dir(browser)
+    elif isinstance(user_data_dir, str) and user_data_dir.upper() == "TEMP":
+        profile = Path(tempfile.mkdtemp(prefix="mahjong-meme-profile-"))
+    else:
+        profile = Path(user_data_dir)
+    profile.mkdir(parents=True, exist_ok=True)
+
     args = [
         exe,
         f"--remote-debugging-port={port}",
@@ -142,6 +183,8 @@ def launch_browser(
         # 'http://localhost:<port>/json' works without it, but we set it for safety.
         "--remote-allow-origins=*",
     ]
+    if window_size:
+        args.append(f"--window-size={window_size}")
     if extra_args:
         args.extend(extra_args)
     # Open URL last so it lands in the first tab Playwright sees on attach.
