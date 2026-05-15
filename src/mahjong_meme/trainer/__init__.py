@@ -43,6 +43,7 @@ from .ukeire import (
     calculate_ukeire_from_only_hand,
     calculate_ukeire_upgrades,
 )
+from .yaku import HanError, HanResult, Meld, calculate_han, make_meld
 
 __all__ = [
     "evaluate_turn",
@@ -69,4 +70,9 @@ __all__ = [
     "tile_counts",
     "merge_red_fives",
     "dora_from_indicator",
+    "calculate_han",
+    "HanError",
+    "HanResult",
+    "Meld",
+    "make_meld",
 ]

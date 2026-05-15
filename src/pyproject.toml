@@ -9,6 +9,7 @@ description = "Launch a Chromium browser, attach via CDP to Mahjong Soul, and st
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.40,<2",
+    "mahjong>=1.2,<2",
 ]
 
 [project.scripts]
