@@ -233,9 +233,14 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
 
     melds = match.get("melds") or []
     discards = match.get("discards") or []
-    dora_indicators = match.get("dora_indicators") or []
+    dora_indicators = [d for d in (match.get("dora_indicators") or []) if d]
     liqi = match.get("liqi") or []
     my_seat = match.get("my_seat")
+    # Strip any None tiles defensively (state.js should always return strings
+    # but during round transitions a probe race could yield nulls).
+    hand = [t for t in hand if t]
+    if not hand:
+        return None
 
     # Pull MY called sets separately — the trainer treats each as a locked
     # complete set when computing shanten. Visibility comes from the
@@ -245,7 +250,11 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
         if my_seat is not None and 0 <= my_seat < len(melds)
         else []
     ) or []
-    my_melds: list[list[str]] = [list(m.get("tiles") or []) for m in my_melds_raw]
+    my_melds: list[list[str]] = [
+        [t for t in (m.get("tiles") or []) if t] for m in my_melds_raw
+    ]
+    # Drop empty meld groups defensively (a meld with no tiles is meaningless).
+    my_melds = [m for m in my_melds if m]
 
     # Flatten visibility for everyone EXCEPT my own melds (the trainer adds
     # those itself). Opponents' melds and all discards stay in visible.
@@ -254,16 +263,17 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
         if seat_idx == my_seat:
             continue
         for meld in seat_melds or []:
-            flat_visible.extend(meld.get("tiles") or [])
+            flat_visible.extend(t for t in (meld.get("tiles") or []) if t)
     for seat_discards in discards:
-        flat_visible.extend(seat_discards or [])
+        flat_visible.extend(t for t in (seat_discards or []) if t)
 
     opponents: list = []
     n_seats = max(len(discards), len(liqi), 4)
     for seat in range(n_seats):
         if seat == my_seat:
             continue
-        seat_discards = discards[seat] if seat < len(discards) else []
+        raw_seat_discards = discards[seat] if seat < len(discards) else []
+        seat_discards = [t for t in (raw_seat_discards or []) if t]
         in_riichi = bool(liqi[seat]) if seat < len(liqi) else False
         riichi_tile: str | None = None
         tiles_after: list[str] = []
@@ -278,7 +288,7 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
             tiles_after = list(seat_discards)
         opponents.append(
             OpponentInfo(
-                discards=list(seat_discards),
+                discards=seat_discards,
                 riichi_tile=riichi_tile,
                 tiles_after_riichi=tiles_after,
             )

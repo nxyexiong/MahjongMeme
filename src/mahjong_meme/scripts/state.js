@@ -150,8 +150,19 @@
             melds.push(blocks);
           } else melds.push([]);
           const qc = p && p.container_qipai;
-          if (qc && Array.isArray(qc.pais)) discards.push(qc.pais.map(t => tileStr(t.val || t)));
-          else discards.push([]);
+          if (qc && Array.isArray(qc.pais)) {
+            // Mahjong Soul splits a player's discard pile across two
+            // fields: `pais` holds every prior discard, and `last_pai`
+            // holds the MOST RECENT discard (with `last_pai_count > 0`).
+            // When the player discards again, the old `last_pai` rolls
+            // into `pais`. Concatenate them to get the full pile.
+            const tiles = qc.pais.map(t => tileStr(t.val || t));
+            if (qc.last_pai_count > 0 && qc.last_pai) {
+              const lt = tileStr(qc.last_pai.val || qc.last_pai);
+              if (lt) tiles.push(lt);
+            }
+            discards.push(tiles);
+          } else discards.push([]);
           liqi.push(!!(p && p.lichi));
         }
         // `O.lastpai_seat` is the SERVER seat of the discarder; translate
