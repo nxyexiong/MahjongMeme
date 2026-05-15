@@ -1,7 +1,9 @@
 # Downloaded tenhou replays — do not commit (see demo/README.md).
 replays/
+parsed/
 *.xml
 *.json
+*.jsonl
 *.html
 *.html.gz
 *.log.gz

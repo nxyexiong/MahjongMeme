@@ -53,6 +53,10 @@ class HanError(IntEnum):
     INVALID_INPUT = 3
     """Tile count wrong, win_tile not in hand, malformed meld, etc."""
 
+    FURITEN = 4
+    """Player cannot ron because they previously discarded one of their
+    waits. Set only when `own_discards` is provided to `calculate_han`."""
+
 
 MeldType = Literal["chi", "pon", "kan_open", "kan_closed", "kan_added"]
 
@@ -227,6 +231,8 @@ def calculate_han(
     round_wind: int = 1,
     has_aka_dora: bool = True,
     has_open_tanyao: bool = True,
+    own_discards: Sequence[str] = (),
+    waits: Sequence[str] = (),
 ) -> HanResult:
     """Compute han + fu + yaku + score for a winning hand.
 
@@ -249,6 +255,16 @@ def calculate_han(
         1..4 for E/S/W/N.
     has_aka_dora, has_open_tanyao
         Standard riichi-rules options. Defaults match Mahjong Soul.
+    own_discards
+        Player's own discard pile. Used for FURITEN enforcement on ron
+        wins (``is_tsumo=False``). If the win tile — or any tile in the
+        player's `waits` — appears in `own_discards`, the result is
+        ``HanError.FURITEN``. Ignored for tsumo. Defaults to empty
+        (no furiten check).
+    waits
+        Optional explicit wait set. If provided, furiten triggers when
+        ANY waiting tile is in `own_discards`. If empty, only the
+        ``win_tile`` is checked. Tsumo wins are not affected.
 
     Returns
     -------
@@ -256,6 +272,26 @@ def calculate_han(
     """
     melds = list(melds)
     n_melds = len(melds)
+
+    # ----- Furiten check (ron only) -----
+    # Furiten is a LEGALITY rule, not a yaku — enforced before scoring.
+    # The upstream `mahjong` library does not implement it (it just scores
+    # whatever winning hand it's given).
+    if not is_tsumo and own_discards:
+        def _norm(s: str) -> str:
+            return s[:-1] if s.endswith("*") else s
+        own_norms = {_norm(t) for t in own_discards}
+        check = {_norm(win_tile)}
+        if waits:
+            check.update(_norm(w) for w in waits)
+        if check & own_norms:
+            return HanResult(
+                -1, -1, 0, error=HanError.FURITEN,
+                error_detail=(
+                    f"furiten: at least one waiting tile is in own_discards "
+                    f"({sorted(check & own_norms)})"
+                ),
+            )
 
     # Hand-size sanity check.
     expected_with = 14 - 3 * n_melds
