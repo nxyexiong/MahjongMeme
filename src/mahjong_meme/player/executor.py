@@ -76,7 +76,7 @@ class Executor:
 
     def _sleep_before_action(self) -> None:
         if self.delay_mode == DELAY_RANDOM:
-            secs = random.uniform(1.0, 5.0)
+            secs = random.uniform(0.5, 3.0)
             self.log(f"[mj.play] delay-mode=random sleeping {secs:.2f}s")
             time.sleep(secs)
 
@@ -116,7 +116,14 @@ class Executor:
                 # only available kan is minkan.
                 subtype = "kan_closed" if kind == "discard" else "kan_open"
             tile = action.get("tile") or extra.get("tile")
-            combos = (state.get("actionable") or {}).get("kan_combinations") or []
+            actionable = state.get("actionable") or {}
+            if subtype == "kan_added":
+                combos = actionable.get("kan_added_combinations") or []
+            elif subtype == "kan_closed":
+                combos = (actionable.get("kan_closed_combinations")
+                          or actionable.get("kan_combinations") or [])
+            else:
+                combos = actionable.get("kan_combinations") or []
             return self._call_js(page, CALL_JS,
                                   {"type": subtype, "tile": _norm_tile(tile),
                                    "combinations": list(combos)})

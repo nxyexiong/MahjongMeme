@@ -187,11 +187,20 @@ CALL_JS = r"""
     }
 
     const body = { type: wantType, index: subIndex, timeuse: 1 };
-    // Ankan (type 4) is dispatched via inputOperation (own-turn self
-    // action), while chakan/minkan/chi/pon/ron go via inputChiPengGang
-    // (response to or after a discard). Mahjong Soul rejects ankan
-    // sent over inputChiPengGang.
-    const method = (wantType === 4) ? 'inputOperation' : 'inputChiPengGang';
+    // Wire method depends on whether this is an OWN-TURN self-action
+    // or a RESPONSE to an opponent's discard:
+    //
+    //   inputOperation     (own-turn)        types: 1=dapai, 4=ankan,
+    //                                               6=chakan, 7=riichi,
+    //                                               8=tsumo, 11=kita
+    //   inputChiPengGang   (post-discard)    types: 2=chi, 3=pon,
+    //                                               5=minkan, 9=ron
+    //
+    // The previous version routed type=6 (chakan) via
+    // inputChiPengGang, which the server silently rejects — chakan
+    // happens on YOUR turn, not in response to someone else.
+    const ownTurnTypes = { 4: 1, 6: 1, 7: 1, 8: 1, 11: 1 };
+    const method = ownTurnTypes[wantType] ? 'inputOperation' : 'inputChiPengGang';
     app.NetAgent.sendReq2MJ('FastTest', method, body, function (resp) {});
     try { O.ClearOperationShow && O.ClearOperationShow(); } catch (e) {}
     return { ok: true, type: wantType, index: subIndex,

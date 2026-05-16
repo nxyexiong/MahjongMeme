@@ -330,7 +330,11 @@
 
         if (matchState && matchState.can_discard) {
           needs = true; actionable.kind = 'discard';
-          if (callBtns.length) attachCombinations(actionable);
+          // Note: we deliberately do NOT call attachCombinations() here.
+          // On own-turn, UI_ChiPengHu._data is unreliable: it may carry
+          // stale chi/pon entries from a just-passed call window, and
+          // its `gang` field is often empty even when ankan/chakan is
+          // legal. We use the server's operation_list (below) instead.
           // Pre-compute kan subtype options for own-turn. The Mahjong
           // Soul UI uses a single "btn_gang" button regardless of
           // whether the player has ankan (closed kan from drawn or
@@ -340,40 +344,116 @@
           // happen on own-turn — passing type=5 here silently locks
           // up the round).
           //
-          // Distinguish per kan_combinations[] tile by checking
-          // whether the player already has an open pon of that tile.
-          // We do this by tile content (not `meld.type`, whose
-          // numeric encoding has varied across mjcore builds):
-          // a pon's `pais` is exactly 3 IDENTICAL tiles, whereas
-          // a chi has 3 differing tiles and a kan has 4 tiles.
-          const myMelds = (matchState.melds && matchState.melds[matchState.my_seat]) || [];
+          // The canonical source for own-turn options is the server's
+          // protobuf at `O.mainrole.operation.operation_list`. Each
+          // entry has `{ type, combination }` where `type` is the
+          // wire op enum (4=ankan, 6=chakan, 7=riichi, 8=tsumo,
+          // 11=kita) and `combination` is an array of "tile|tile|..."
+          // strings describing the candidate tile groups. The wire
+          // `index` we send is the position WITHIN that combination
+          // array.
+          //
+          // `UI_ChiPengHu._data.gang` is the UI panel's mirror but is
+          // NOT reliably populated for own-turn kans — the panel
+          // sometimes uses `_data.peng` for chakan, sometimes is empty.
+          // We don't trust it on own-turn; we go straight to the
+          // protobuf.
           function normTile(t) {
             if (!t || typeof t !== 'string') return t;
             return t.replace(/\*$/, '').replace(/^0([mps])$/, '5$1');
-          }
-          function ponTiles() {
-            const out = {};
-            for (const m of myMelds) {
-              if (!m || !Array.isArray(m.tiles) || m.tiles.length !== 3) continue;
-              const a = normTile(m.tiles[0]);
-              const b = normTile(m.tiles[1]);
-              const c = normTile(m.tiles[2]);
-              if (a && a === b && b === c) out[a] = true;
-            }
-            return out;
           }
           function firstTileOf(combo) {
             if (!combo) return null;
             return normTile(String(combo).split('|')[0] || '');
           }
-          const pons = ponTiles();
-          let kanOpts = [];
-          if (Array.isArray(actionable.kan_combinations) && actionable.kan_combinations.length) {
-            for (const combo of actionable.kan_combinations) {
-              const tile = firstTileOf(combo);
-              const subtype = pons[tile] ? 'kan_added' : 'kan_closed';
-              kanOpts.push({ tile, subtype, combo });
+          // Read operation_list from the server protobuf. Be liberal
+          // about the field name (operation_list / operationList) and
+          // about how it's exposed (array vs accessor) - the Mahjong
+          // Soul build varies.
+          let opList = null;
+          let opRaw = null;
+          try {
+            const me0 = O && O.mainrole;
+            const op  = me0 && me0.operation;
+            opRaw = op;
+            if (op) {
+              if (Array.isArray(op.operation_list)) opList = op.operation_list;
+              else if (Array.isArray(op.operationList)) opList = op.operationList;
+              else if (op.operation_list && typeof op.operation_list === 'object') {
+                // Some builds wrap arrays in protobuf-js List objects.
+                try { opList = Array.from(op.operation_list); } catch (e) {}
+              }
             }
+          } catch (e) {}
+          // Build {type: combinations[]} map from operation_list.
+          const opCombos = {};
+          if (opList) {
+            for (const o of opList) {
+              if (!o || typeof o.type !== 'number') continue;
+              let combo = o.combination;
+              if (combo && !Array.isArray(combo) && typeof combo === 'object') {
+                try { combo = Array.from(combo); } catch (e) {}
+              }
+              opCombos[o.type] = Array.isArray(combo) ? combo.slice() : [];
+            }
+          }
+          // Diagnostic dump (always; small payload) so we can see what
+          // the server protobuf actually contains during a live test.
+          try {
+            actionable._diag = {
+              has_operation: !!opRaw,
+              op_keys: opRaw ? Object.keys(opRaw) : [],
+              opList_kind: opList === null ? 'null'
+                : (Array.isArray(opList) ? 'array' : typeof opList),
+              opList_len: Array.isArray(opList) ? opList.length : null,
+              op_types: opList ? opList.map(o => o && o.type) : null,
+              op_combinations: opList ? opList.map(o => {
+                let c = o && o.combination;
+                if (c && !Array.isArray(c)) { try { c = Array.from(c); } catch (e) {} }
+                return { type: o && o.type, combination: c };
+              }) : null,
+            };
+          } catch (e) { actionable._diag = { err: String(e && e.message || e) }; }
+          // Build the kan-option list. PREFER operation_list when it's
+          // populated, but fall back to hand+meld inspection — the
+          // protobuf is often empty on yo-star/EN builds even when
+          // kan IS legal.
+          let kanOpts = [];
+          for (const combo of (opCombos[4] || [])) {
+            kanOpts.push({ tile: firstTileOf(combo), subtype: 'kan_closed', combo });
+          }
+          for (const combo of (opCombos[6] || [])) {
+            kanOpts.push({ tile: firstTileOf(combo), subtype: 'kan_added', combo });
+          }
+          if (!kanOpts.length) {
+            // FALLBACK: derive kan options from hand + melds.
+            // - Ankan candidate: any rank with 4 copies in hand.
+            // - Chakan candidate: any pon meld whose tile is also in
+            //   my current hand (i.e. I just drew the 4th copy).
+            const handCounts = {};
+            for (const t of matchState.hand) {
+              const n = normTile(t);
+              if (n) handCounts[n] = (handCounts[n] || 0) + 1;
+            }
+            for (const tile of Object.keys(handCounts)) {
+              if (handCounts[tile] >= 4) {
+                kanOpts.push({ tile, subtype: 'kan_closed' });
+              }
+            }
+            const myMelds = (matchState.melds && matchState.melds[matchState.my_seat]) || [];
+            for (const m of myMelds) {
+              if (!m || !Array.isArray(m.tiles) || m.tiles.length !== 3) continue;
+              const a = normTile(m.tiles[0]);
+              const b = normTile(m.tiles[1]);
+              const c = normTile(m.tiles[2]);
+              if (!a || a !== b || b !== c) continue;  // not a pon
+              if (handCounts[a]) {
+                kanOpts.push({ tile: a, subtype: 'kan_added' });
+              }
+            }
+          }
+          if (kanOpts.length) {
+            actionable.kan_options = kanOpts.map(k => ({ tile: k.tile, subtype: k.subtype }));
           }
           // Surface any post-draw self-action buttons FIRST so they
           // show up at the top of the option list.
@@ -388,7 +468,7 @@
                     { subtype: k.subtype, tile: k.tile, combination: k.combo }));
                 }
               } else {
-                // No combinations data — emit a single closed-kan
+                // Truly no data — emit a single closed-kan
                 // option (most common own-turn case) so the executor
                 // doesn't fall back to kan_open.
                 actionable.options.push(actNode('kan', b, b.name,
@@ -396,9 +476,100 @@
               }
             }
           }
-          // Then one option per hand tile.
+          // Then one option per hand tile, EXCEPT tiles that would
+          // be silently rejected by the server. Two categories of
+          // "forbidden discard":
+          //
+          //   (1) Aka-kuikae: immediately after chi-ing tile X, you
+          //       cannot discard X.
+          //   (2) Suji-kuikae: after chi-ing a run that places the
+          //       called tile at one END of the run, you cannot
+          //       discard the tile that would be the OTHER end of
+          //       the equivalent alternative run. E.g. chi 3-4-5s on
+          //       called 5s (in-hand 3+4): forbidden = 5s + 2s.
+          //   (3) Pon-kuikae: after pon-ing tile X, you cannot
+          //       discard another X (the one still in hand).
+          //
+          // Authoritative source: when the server requires a
+          // restricted discard, the type=1 (dapai) entry in
+          // operation_list carries a non-empty `combination` field
+          // listing the ALLOWED tiles (joined by '|'). When absent,
+          // all hand tiles are legal. We fall back to a heuristic
+          // (detect just-called meld from last_discard.tile) when
+          // the server doesn't volunteer the restriction.
+          //
+          // Also: if I'm in riichi, only the just-drawn tile is a
+          // legal discard. Mahjong Soul's `me.last_tile` carries it.
+          let allowedFromServer = null;
+          if (opCombos[1]) {
+            // operation_list type=1 combination is an array of
+            // single-tile strings (each one allowed). Empty array
+            // means "no restriction" in some builds; treat empty
+            // as "no info" and fall back to heuristic.
+            const c = opCombos[1];
+            if (c.length) {
+              allowedFromServer = new Set();
+              for (const s of c) {
+                // Each entry could be 'tile' or 'tile|tile|...'.
+                String(s).split('|').forEach((t) => {
+                  const n = normTile(t.trim());
+                  if (n) allowedFromServer.add(n);
+                });
+              }
+              actionable.allowed_discards = Array.from(allowedFromServer);
+            }
+          }
+          const forbidden = new Set();
+          if (!allowedFromServer) {
+            (function computeForbidden() {
+              if (!matchState.last_discard || matchState.last_discard.seat === matchState.my_seat) return;
+              const ld = normTile(matchState.last_discard.tile);
+              if (!ld) return;
+              const myMelds2 = matchState.melds && matchState.melds[matchState.my_seat] || [];
+              if (!myMelds2.length) return;
+              const last = myMelds2[myMelds2.length - 1];
+              if (!last || !Array.isArray(last.tiles) || last.tiles.length !== 3) return;
+              const tiles = last.tiles.map(normTile);
+              if (!tiles.includes(ld)) return;
+              const allSame = tiles[0] === tiles[1] && tiles[1] === tiles[2];
+              if (allSame) {
+                // Pon-kuikae: forbid the other copy of the called tile.
+                forbidden.add(ld);
+                return;
+              }
+              // Chi.
+              const suit = ld.slice(-1);
+              const sorted = tiles.slice().sort();
+              forbidden.add(ld);  // aka-kuikae
+              const calledRank = parseInt(ld[0], 10);
+              const ranks = sorted.map(t => parseInt(t[0], 10));
+              if (ranks[2] - ranks[0] !== 2) return;
+              if (calledRank === ranks[0]) {
+                const r = calledRank + 3;
+                if (r >= 1 && r <= 9) forbidden.add(r + suit);
+              } else if (calledRank === ranks[2]) {
+                const r = calledRank - 3;
+                if (r >= 1 && r <= 9) forbidden.add(r + suit);
+              }
+            })();
+            if (forbidden.size) actionable.forbidden_discards = Array.from(forbidden);
+          }
+          // Post-riichi: only the drawn tile is a legal discard.
+          let drawnTileOnly = null;
+          try {
+            if (matchState.liqi && matchState.liqi[matchState.my_seat]) {
+              const lt = O.mainrole && O.mainrole.last_tile;
+              if (lt && lt.val) drawnTileOnly = normTile(tileStr(lt.val));
+            }
+          } catch (e) {}
+          if (drawnTileOnly) actionable.riichi_locked_to_tile = drawnTileOnly;
           for (let i = 0; i < matchState.hand.length; i++) {
-            actionable.options.push({ action: 'discard', tile: matchState.hand[i], slot: i });
+            const t = matchState.hand[i];
+            const tn = normTile(t);
+            if (allowedFromServer && !allowedFromServer.has(tn)) continue;
+            if (!allowedFromServer && forbidden.has(tn)) continue;
+            if (drawnTileOnly && tn !== drawnTileOnly) continue;
+            actionable.options.push({ action: 'discard', tile: t, slot: i });
           }
         } else if (callBtns.length) {
           needs = true; actionable.kind = 'call_window';

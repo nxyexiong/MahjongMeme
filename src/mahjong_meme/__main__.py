@@ -96,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("instant", "random"),
         default="instant",
         help="When --play is set, controls per-action delay. 'instant' acts "
-             "immediately; 'random' waits a uniform random delay in [1, 5] "
+             "immediately; 'random' waits a uniform random delay in [0.5, 3] "
              "seconds before each action. Default: instant.",
     )
     p.add_argument(
