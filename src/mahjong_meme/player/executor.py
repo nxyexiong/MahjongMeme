@@ -144,7 +144,7 @@ class Executor:
         if isinstance(result, dict) and result.get("ok"):
             # Surface useful context (combination index for chi/kan, etc).
             extras = []
-            for k in ("type", "index", "combination", "tile", "isDrawn"):
+            for k in ("type", "index", "method", "combination", "tile", "isDrawn"):
                 if k in result:
                     extras.append(f"{k}={result[k]}")
             if extras:

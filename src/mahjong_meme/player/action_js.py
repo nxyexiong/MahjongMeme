@@ -187,11 +187,16 @@ CALL_JS = r"""
     }
 
     const body = { type: wantType, index: subIndex, timeuse: 1 };
-    app.NetAgent.sendReq2MJ('FastTest', 'inputChiPengGang', body,
-      function (resp) {});
+    // Ankan (type 4) is dispatched via inputOperation (own-turn self
+    // action), while chakan/minkan/chi/pon/ron go via inputChiPengGang
+    // (response to or after a discard). Mahjong Soul rejects ankan
+    // sent over inputChiPengGang.
+    const method = (wantType === 4) ? 'inputOperation' : 'inputChiPengGang';
+    app.NetAgent.sendReq2MJ('FastTest', method, body, function (resp) {});
     try { O.ClearOperationShow && O.ClearOperationShow(); } catch (e) {}
     return { ok: true, type: wantType, index: subIndex,
               combination: combination,
+              method: method,
               source: args.combinations ? 'state_actionable'
                 : (combos.length ? 'UI_ChiPengHu._data' : 'fallback_zero') };
   } catch (e) {

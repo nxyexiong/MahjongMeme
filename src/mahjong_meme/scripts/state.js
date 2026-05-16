@@ -342,24 +342,29 @@
           //
           // Distinguish per kan_combinations[] tile by checking
           // whether the player already has an open pon of that tile.
-          // `meld.type` from mjcore: 0=chi, 1=peng, 2=ming-gang,
-          // 3=add-gang (chakan), 4=an-gang.
+          // We do this by tile content (not `meld.type`, whose
+          // numeric encoding has varied across mjcore builds):
+          // a pon's `pais` is exactly 3 IDENTICAL tiles, whereas
+          // a chi has 3 differing tiles and a kan has 4 tiles.
           const myMelds = (matchState.melds && matchState.melds[matchState.my_seat]) || [];
+          function normTile(t) {
+            if (!t || typeof t !== 'string') return t;
+            return t.replace(/\*$/, '').replace(/^0([mps])$/, '5$1');
+          }
           function ponTiles() {
             const out = {};
             for (const m of myMelds) {
               if (!m || !Array.isArray(m.tiles) || m.tiles.length !== 3) continue;
-              if (m.type !== 1 && m.type !== 'peng' && m.type !== 'pon') continue;
-              // 3 identical tiles (modulo red-five marker).
-              const norm = m.tiles[0] && m.tiles[0].replace ? m.tiles[0].replace(/\*$/, '').replace(/^0/, '5') : m.tiles[0];
-              out[norm] = true;
+              const a = normTile(m.tiles[0]);
+              const b = normTile(m.tiles[1]);
+              const c = normTile(m.tiles[2]);
+              if (a && a === b && b === c) out[a] = true;
             }
             return out;
           }
           function firstTileOf(combo) {
             if (!combo) return null;
-            const s = String(combo).split('|')[0] || '';
-            return s.replace(/\*$/, '').replace(/^0/, '5');
+            return normTile(String(combo).split('|')[0] || '');
           }
           const pons = ponTiles();
           let kanOpts = [];
