@@ -32,6 +32,7 @@ build/
 dist/
 wheels/
 *.whl
+artifacts/
 pip-log.txt
 pip-delete-this-directory.txt
 .python-version

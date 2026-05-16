@@ -185,11 +185,28 @@ def dump_replay(
     return paths
 
 
+def _dump_one_worker(args_tuple):
+    """Worker entrypoint for multiprocessing pool."""
+    xml_path, base, fmt, indent, skip_existing = args_tuple
+    out_dir = base / xml_path.stem
+    if skip_existing:
+        if (out_dir / f"seat0.{'jsonl' if fmt == 'jsonl' else 'json'}").exists():
+            return (xml_path.name, "skip", 0)
+    try:
+        files = dump_replay(xml_path, out_dir, fmt=fmt, indent=indent)
+        size_kb = sum(f.stat().st_size for f in files) / 1024
+        return (xml_path.name, "ok", size_kb)
+    except Exception as e:
+        return (xml_path.name, f"error: {e!r}", 0)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("xml", nargs="+", help="Path(s) to tenhou replay XML file(s). "
-                                          "Multiple files: each gets its own subfolder.")
+    p.add_argument("xml", nargs="+",
+                   help="Path(s) to tenhou replay XML file(s), or directories "
+                        "containing them. Multiple inputs: each XML gets its "
+                        "own subfolder.")
     p.add_argument("--out-dir", default=None,
                    help="Base output directory. Per-replay subfolder is "
                         "created inside. Default: demo/parsed/")
@@ -200,26 +217,62 @@ def main() -> int:
                    help="Pretty-print JSON with this indent (json format only). "
                         "Default: compact.")
     p.add_argument("--quiet", action="store_true", help="Suppress per-file logging.")
+    p.add_argument("--skip-existing", action="store_true",
+                   help="Skip replays whose output folder already has seat0 dumped.")
+    p.add_argument("--workers", "-j", type=int, default=1,
+                   help="Number of parallel worker processes (default: 1).")
     args = p.parse_args()
 
     base = Path(args.out_dir) if args.out_dir else REPO / "demo" / "parsed"
 
+    # Expand directories into their *.xml contents.
+    inputs: list[Path] = []
+    for arg in args.xml:
+        path = Path(arg)
+        if path.is_dir():
+            inputs.extend(sorted(path.glob("*.xml")))
+        else:
+            inputs.append(path)
+
+    work = [(xml_path, base, args.format, args.indent, args.skip_existing)
+            for xml_path in inputs]
+
     rc = 0
-    for xml_str in args.xml:
-        xml_path = Path(xml_str)
-        if not xml_path.exists():
-            print(f"error: file not found: {xml_path}", file=sys.stderr)
-            rc = 1
-            continue
-
-        out_dir = base / xml_path.stem
-        files = dump_replay(xml_path, out_dir, fmt=args.format, indent=args.indent)
-
-        if not args.quiet:
-            for f in files:
-                size_kb = f.stat().st_size / 1024
-                print(f"  wrote {f}  ({size_kb:.1f} KB)")
-            print(f"[{xml_path.name}] -> {out_dir}\n")
+    done = 0
+    t0 = __import__("time").time()
+    if args.workers > 1:
+        import multiprocessing as mp
+        with mp.Pool(processes=args.workers) as pool:
+            for name, status, size_kb in pool.imap_unordered(
+                    _dump_one_worker, work, chunksize=4):
+                done += 1
+                if status == "ok":
+                    if not args.quiet:
+                        print(f"  [{done}/{len(work)}] {name}  ({size_kb:.0f} KB)",
+                              flush=True)
+                elif status == "skip":
+                    pass
+                else:
+                    print(f"  [{done}/{len(work)}] {name}  {status}",
+                          file=sys.stderr, flush=True)
+                    rc = 1
+                if done % 50 == 0:
+                    dt = __import__("time").time() - t0
+                    rate = done / max(dt, 1e-9)
+                    eta = (len(work) - done) / max(rate, 1e-9)
+                    print(f"  [{done}/{len(work)}] rate={rate:.1f}/s "
+                          f"ETA={eta:.0f}s", flush=True)
+    else:
+        for item in work:
+            name, status, size_kb = _dump_one_worker(item)
+            done += 1
+            if status == "ok" and not args.quiet:
+                print(f"  [{done}/{len(work)}] {name}  ({size_kb:.0f} KB)",
+                      flush=True)
+            elif status not in ("ok", "skip"):
+                print(f"  [{done}/{len(work)}] {name}  {status}",
+                      file=sys.stderr, flush=True)
+                rc = 1
     return rc
 
 

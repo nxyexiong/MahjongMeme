@@ -152,7 +152,26 @@ python -m mahjong_meme.myai predict --checkpoint ... --state state.json
 
 ---
 
-## PART B — `src/mahjong_meme/mortalai/` (Mortal integration)
+## PART B — `src/mahjong_meme/mortalai/` (Mortal integration) — **DROPPED**
+
+> **Status (2026-05-16): SKIPPED.** Mortal cannot be integrated under
+> current constraints. Two hard blockers:
+>
+> 1. **License**: Mortal is AGPL-3.0-or-later. Vendoring + importing
+>    its modules would force this project to AGPL too.
+> 2. **Weights**: per the author's
+>    [gist](https://gist.github.com/Equim-chan/cf3f01735d5d98f1e7be02e94b288c56)
+>    (2022-08-19), pretrained weights are **not** publicly distributed
+>    and there are no plans to release them. Self-training takes
+>    days of GPU compute, out of scope here. No fork has published
+>    weights.
+>
+> Reopen this section if (a) project licensing changes, or
+> (b) shareable Mortal-style weights become available, or
+> (c) `mjai.ekyu.moe` publishes a stable API.
+
+The original B1–B5 task spec is retained below for reference; the
+work was never started.
 
 ### B1. Vendor Mortal
 

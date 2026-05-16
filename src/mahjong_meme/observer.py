@@ -194,8 +194,84 @@ def _short(value: Any, limit: int = 400) -> str:
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
-def print_state(state: dict[str, Any], *, log=print) -> None:
-    """Pretty-print a full state snapshot, with trainer advice when applicable."""
+def _render_advisor_panel(state: dict[str, Any],
+                          advisors: list) -> str:
+    """Render a multi-line tri-rec panel comparing each advisor's opinion.
+
+    Returns an empty string when no advisor has anything to say on this
+    state (e.g. pure observer / non-actionable).
+    """
+    from mahjong_meme.advisors import actions_equivalent
+
+    advices = []
+    for adv in advisors:
+        try:
+            a = adv.advise(state)
+        except Exception as e:
+            from mahjong_meme.advisors import Advice
+            a = Advice(name=adv.name, summary=f"error: {e!r}")
+        if a is not None:
+            advices.append(a)
+    if not advices:
+        return ""
+
+    # The first advisor with a concrete action becomes the "reference"
+    # we compare others against for the AGREES / DISAGREES flag.
+    reference_action = next(
+        (a.action for a in advices if a.action is not None), None
+    )
+
+    name_w = max((len(a.name) for a in advices), default=8)
+    lines: list[str] = []
+    for a in advices:
+        head_action = _format_action(a.action) if a.action else "(no opinion)"
+        verdict = ""
+        if a.action is not None and reference_action is not None and a is not advices[0]:
+            verdict = (
+                "  AGREES" if actions_equivalent(a.action, reference_action)
+                else "  DISAGREES"
+            )
+        first, *rest = a.summary.split("\n") if a.summary else [""]
+        lines.append(
+            f"[{a.name:<{name_w}}] {head_action}{verdict}"
+            + (f"  {first}" if first else "")
+        )
+        for extra_line in rest:
+            lines.append(" " * (name_w + 3) + extra_line)
+    return "\n".join(lines)
+
+
+def _format_action(action: dict | None) -> str:
+    if action is None:
+        return "skip"
+    a = action.get("action")
+    if a == "discard":
+        return f"discard {action.get('tile')}"
+    if a == "chi":
+        pos = (action.get("extra") or {}).get("position", "chi")
+        return f"chi:{pos}"
+    if a == "pon":
+        return "pon"
+    if a == "kan":
+        sub = (action.get("extra") or {}).get("subtype")
+        return f"kan:{sub}" if sub else "kan"
+    if a == "lizhi":
+        return "riichi"
+    if a == "hu":
+        return "ron"
+    if a == "zimo":
+        return "tsumo"
+    if a == "kita":
+        return "kita"
+    if a == "skip":
+        return "skip"
+    return a or "?"
+
+
+def print_state(state: dict[str, Any], *,
+                advisors: list | None = None,
+                log=print) -> None:
+    """Pretty-print a full state snapshot, with advisor panel when applicable."""
     log("=" * 72)
     log(f"[mj] STATE  scene={state.get('scene')}  "
         f"needs_my_action={state.get('needs_my_action')}  "
@@ -203,134 +279,27 @@ def print_state(state: dict[str, Any], *, log=print) -> None:
     log("-" * 72)
     log(json.dumps(state, ensure_ascii=False, indent=2, default=str))
 
-    advice = _trainer_advice(state)
-    if advice:
-        log("-" * 72)
-        log(advice)
+    if advisors:
+        panel = _render_advisor_panel(state, advisors)
+        if panel:
+            log("-" * 72)
+            log(panel)
     log("=" * 72)
 
 
 def _trainer_advice(state: dict[str, Any]) -> str | None:
-    """Run the trainer engine on the current state when it's a discard turn.
-
-    Returns a multi-line text block, or None when no advice is applicable
-    (e.g. not a match scene, not the player's turn, hand not visible).
+    """Backwards-compat shim: run the TrainerAdvisor only and return its
+    summary text. Kept for ``tools/inspect_replay.py --advice``.
     """
-    actionable = state.get("actionable") or {}
-    if actionable.get("kind") != "discard":
-        return None
-    match = state.get("match") or {}
-    hand = match.get("hand")
-    if not hand:
-        return None
-
-    # Import lazily so a missing trainer (shouldn't happen, but…) doesn't
-    # break the entire observer loop.
     try:
-        from mahjong_meme.trainer import OpponentInfo, evaluate_turn
+        from mahjong_meme.advisors.trainer_advisor import TrainerAdvisor
     except Exception as e:
         return f"[mj.trainer] unavailable: {e!r}"
-
-    melds = match.get("melds") or []
-    discards = match.get("discards") or []
-    dora_indicators = [d for d in (match.get("dora_indicators") or []) if d]
-    liqi = match.get("liqi") or []
-    my_seat = match.get("my_seat")
-    # Strip any None tiles defensively (state.js should always return strings
-    # but during round transitions a probe race could yield nulls).
-    hand = [t for t in hand if t]
-    if not hand:
+    a = TrainerAdvisor().advise(state)
+    if a is None:
         return None
-
-    # Pull MY called sets separately — the trainer treats each as a locked
-    # complete set when computing shanten. Visibility comes from the
-    # trainer; we just pass the tile lists.
-    my_melds_raw = (
-        melds[my_seat]
-        if my_seat is not None and 0 <= my_seat < len(melds)
-        else []
-    ) or []
-    my_melds: list[list[str]] = [
-        [t for t in (m.get("tiles") or []) if t] for m in my_melds_raw
-    ]
-    # Drop empty meld groups defensively (a meld with no tiles is meaningless).
-    my_melds = [m for m in my_melds if m]
-
-    # Flatten visibility for everyone EXCEPT my own melds (the trainer adds
-    # those itself). Opponents' melds and all discards stay in visible.
-    flat_visible: list[str] = []
-    for seat_idx, seat_melds in enumerate(melds):
-        if seat_idx == my_seat:
-            continue
-        for meld in seat_melds or []:
-            flat_visible.extend(t for t in (meld.get("tiles") or []) if t)
-    for seat_discards in discards:
-        flat_visible.extend(t for t in (seat_discards or []) if t)
-
-    opponents: list = []
-    n_seats = max(len(discards), len(liqi), 4)
-    for seat in range(n_seats):
-        if seat == my_seat:
-            continue
-        raw_seat_discards = discards[seat] if seat < len(discards) else []
-        seat_discards = [t for t in (raw_seat_discards or []) if t]
-        in_riichi = bool(liqi[seat]) if seat < len(liqi) else False
-        riichi_tile: str | None = None
-        tiles_after: list[str] = []
-        if in_riichi and seat_discards:
-            # We can't know the exact riichi-tile index without per-tile
-            # metadata; conservatively, assume the LAST riichi declaration
-            # discard. The state.js doesn't currently mark it — so we just
-            # treat all post-riichi discards (we don't know the split) as
-            # additional safety-tiles. Use the most recent tile as the
-            # declarative one.
-            riichi_tile = seat_discards[-1]
-            tiles_after = list(seat_discards)
-        opponents.append(
-            OpponentInfo(
-                discards=seat_discards,
-                riichi_tile=riichi_tile,
-                tiles_after_riichi=tiles_after,
-            )
-        )
-
-    try:
-        ev = evaluate_turn(
-            hand=hand,
-            visible_tiles=flat_visible,
-            my_melds=my_melds,
-            dora_indicators=dora_indicators,
-            opponents=opponents,
-        )
-    except Exception as e:
-        return f"[mj.trainer] evaluation failed: {e!r}"
-
-    lines = []
-    lines.append(
-        f"[mj.trainer] shanten={ev.shanten} (std={ev.shanten_standard} "
-        f"chii={ev.shanten_chiitoi} kokushi={ev.shanten_kokushi})  "
-        f"dora={ev.dora_tiles}"
-    )
-    if ev.recommended_discard:
-        lines.append(
-            f"[mj.trainer] recommended discard: {ev.recommended_discard}  "
-            f"-> {ev.current_ukeire} ukeire after"
-        )
-    # Top 5 by ukeire.
-    if ev.discards:
-        lines.append("[mj.trainer] top discards:")
-        for d in ev.discards[:5]:
-            marker = "★" if d.is_recommended else " "
-            safety = (
-                "  safety=" + str(d.safety_per_opponent)
-                if d.safety_per_opponent
-                else ""
-            )
-            lines.append(
-                f"  {marker} {d.tile:4} ukeire={d.ukeire_count:3}  "
-                f"tiles={d.ukeire_tiles}{safety}"
-            )
-    return "\n".join(lines)
+    head = _format_action(a.action) if a.action else "(no opinion)"
+    return f"[trainer] {head}\n{a.summary}"
 
 
 def print_events(events: list[dict[str, Any]], *, log=print) -> None:
@@ -348,13 +317,25 @@ def run(
     *,
     poll_interval_s: float = 1.0,
     verbose_events: bool = False,
+    advisors: list | None = None,
     log=print,
 ) -> None:
     """Attach to the browser, install the observer, then loop forever.
 
     Prints a full state snapshot whenever needs_my_action transitions from
     False to True, or when scene changes. Optionally prints every new event.
+
+    Parameters
+    ----------
+    advisors
+        Optional list of ``Advisor`` instances. When None, the default
+        registry is used (trainer + myai if checkpoint is available).
     """
+    if advisors is None:
+        from mahjong_meme.advisors import build_default_advisors
+        advisors = build_default_advisors()
+    log(f"[mj] advisors loaded: {[a.name for a in advisors]}")
+
     wait_for_cdp(cdp_url)
 
     with sync_playwright() as pw:
@@ -403,7 +384,7 @@ def run(
             if in_match and not match_announced:
                 log(f"[mj] match detected (scene={scene})")
                 match_announced = True
-                print_state(state, log=log)
+                print_state(state, advisors=advisors, log=log)
             elif not in_match and match_announced and not last_match_seen:
                 # We left the match — reset the announcement gate so the
                 # next match also triggers.
@@ -432,7 +413,7 @@ def run(
                 # Kind transition while still needing input — fresh decision.
                 should_print = True
             if should_print:
-                print_state(state, log=log)
+                print_state(state, advisors=advisors, log=log)
             elif scene_changed and last_state is not None:
                 log(f"[mj] scene → {scene}")
 

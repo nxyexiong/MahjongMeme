@@ -13,7 +13,7 @@ set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 set "SRC=%ROOT%\src"
 set "BUILD=%ROOT%\build"
-set "VENV=%SRC%\.venv"
+set "VENV=%ROOT%\.venv"
 set "PY=%VENV%\Scripts\python.exe"
 set "DATA_SCRIPTS=%SRC%\mahjong_meme\scripts"
 

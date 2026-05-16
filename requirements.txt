@@ -1,0 +1,4 @@
+playwright>=1.40
+mahjong>=1.2
+numpy>=1.24
+torch>=2.0

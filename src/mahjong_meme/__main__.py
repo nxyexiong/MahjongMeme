@@ -70,6 +70,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also print every new wire event as it streams in.",
     )
     p.add_argument(
+        "--advisors",
+        default=None,
+        help="Comma-separated list of advisors to enable (trainer,myai,mortal). "
+             "Default: trainer + myai (when checkpoint is available). "
+             "Note: mortal is currently a no-op stub (see AI_PLAN.md Part B).",
+    )
+    p.add_argument(
+        "--myai-checkpoint",
+        default=None,
+        help="Path to a MyAI .pt checkpoint. Overrides "
+             "MAHJONG_MEME_MYAI_CHECKPOINT env var. "
+             "Default: artifacts/myai/best.pt",
+    )
+    p.add_argument(
         "--no-launch",
         action="store_true",
         help="Don't spawn a browser; attach to an already-running browser "
@@ -118,10 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[mj]   cdp = {cdp_url}")
 
     try:
+        from mahjong_meme.advisors import build_default_advisors, parse_advisor_list
+        advisors = build_default_advisors(
+            enabled=parse_advisor_list(args.advisors),
+            myai_checkpoint=args.myai_checkpoint,
+        )
         run(
             cdp_url,
             poll_interval_s=args.poll_interval,
             verbose_events=args.verbose_events,
+            advisors=advisors,
         )
     except KeyboardInterrupt:
         print("\n[mj] interrupted by user; exiting (browser left running)")
