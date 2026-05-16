@@ -156,18 +156,79 @@ def _build_candidates(
             candidates.append({"head": "call", "prob": float(p),
                                 "action": _decode_action("call", int(idx), state)})
 
-    if kan_probs is not None:
-        # Per-tile expansion: a "kan yes" decision needs to specify WHICH
-        # tile. We read the legal kan options from state.actionable.options
-        # so the candidates carry the real tile/subtype the game expects.
+    # --- Joint kan / riichi / discard ----------------------------------
+    # On a player's own turn the legal options are:
+    #   - discard any hand tile (always)
+    #   - kan (ankan/chakan) if the hand supports it
+    #   - riichi if tenpai + closed (binary; declared on a discard tile)
+    #   - tsumo if completes the hand (binary)
+    # We build a joint candidate list so the executor's top-K fallback
+    # has only EXECUTABLE actions: every candidate either picks a tile
+    # to discard (with or without riichi) or commits a specific kan
+    # tile. No bare "skip"s during own-turn — the server can't accept
+    # one when you owe a discard.
+
+    if discard_probs is not None:
+        ranked_tiles = [(int(i), float(p)) for i, p in _ranked(discard_probs)
+                        if p > 0]
+        # "Kan no" and "riichi no" probabilities multiply with the
+        # plain-discard candidate weight. "Kan yes" candidates are
+        # standalone (the kan IS the action; the tile is the kan-tile).
+        # "Riichi yes" candidates multiply with each ranked tile.
+        p_kan = float(kan_probs[0]) if kan_probs is not None else 0.0
+        p_no_kan = float(kan_probs[1]) if kan_probs is not None else 1.0
+        p_riichi = float(riichi_probs[0]) if riichi_probs is not None else 0.0
+        p_pass_riichi = float(riichi_probs[1]) if riichi_probs is not None else 1.0
+
+        # Kan-yes candidates (one per legal kan option from state).
+        if kan_probs is not None:
+            kan_options = _kan_options_from_state(state)
+            if kan_options:
+                n = len(kan_options)
+                for opt in kan_options:
+                    candidates.append({
+                        "head": "kan",
+                        "prob": p_kan / n,
+                        "action": opt,
+                    })
+            # If no specific options surfaced (rare), the kan path is
+            # effectively unavailable; p_no_kan absorbs into the discard
+            # candidates below.
+
+        # Each tile -> a discard candidate, optionally a riichi-on-tile.
+        # Weighted by P(no_kan) so kan-yes candidates compete fairly.
+        for tile_idx, p_tile in ranked_tiles:
+            discard_action = _decode_action("discard", tile_idx, state)
+            tile = discard_action.get("tile", index_34_to_tile(tile_idx))
+
+            if riichi_probs is not None:
+                # Joint (riichi-yes / riichi-no) x tile.
+                candidates.append({
+                    "head": "riichi",
+                    "prob": p_no_kan * p_riichi * p_tile,
+                    "action": {"action": "lizhi", "tile": tile,
+                                "slot": discard_action.get("slot"),
+                                "extra": {"declare_on": tile}},
+                })
+                candidates.append({
+                    "head": "discard",
+                    "prob": p_no_kan * p_pass_riichi * p_tile,
+                    "action": discard_action,
+                })
+            else:
+                candidates.append({
+                    "head": "discard",
+                    "prob": p_no_kan * p_tile,
+                    "action": discard_action,
+                })
+    elif kan_probs is not None:
+        # Kan available without a regular discard option (rare —
+        # post-call kan windows). Emit kan-yes candidates and a binary
+        # skip fallback.
         kan_options = _kan_options_from_state(state)
         p_kan = float(kan_probs[0])
         p_no_kan = float(kan_probs[1])
         if kan_options:
-            # Distribute P(kan) across the legal kan options. If multiple
-            # ankan tiles are available, weight equally — the model
-            # doesn't have a per-tile kan head, so this is the best we
-            # can do without retraining with a richer head.
             n = len(kan_options)
             for opt in kan_options:
                 candidates.append({
@@ -175,57 +236,15 @@ def _build_candidates(
                     "prob": p_kan / n,
                     "action": opt,
                 })
-        else:
-            # No specific options surfaced (shouldn't happen) — emit the
-            # binary head as-is for diagnostics.
-            for idx, p in _ranked(kan_probs):
-                candidates.append({"head": "kan", "prob": float(p),
-                                    "action": _decode_action("kan", int(idx), state)})
-        # Always include the "no kan" candidate so the panel can show
-        # passing on a kan as an alternative.
-        if kan_options:
             candidates.append({
                 "head": "kan",
                 "prob": p_no_kan,
                 "action": {"action": "skip"},
             })
-
-    # --- Discard + riichi share the same decision moment ---------------
-    # If riichi is legal: each candidate is (riichi-yes/no) × (discard tile).
-    # If riichi is NOT legal: each candidate is just a discard tile.
-    # If discard is NOT legal but riichi IS (the riichi confirmation
-    # event with options=['lizhi','pass']): surface the binary head as-is.
-
-    if discard_probs is not None:
-        ranked_tiles = [(int(i), float(p)) for i, p in _ranked(discard_probs)
-                        if p > 0]
-        if riichi_probs is not None:
-            p_riichi = float(riichi_probs[0])
-            p_pass   = float(riichi_probs[1])
-            for tile_idx, p_tile in ranked_tiles:
-                discard_action = _decode_action("discard", tile_idx, state)
-                tile = discard_action.get("tile", index_34_to_tile(tile_idx))
-                # Riichi-on-this-tile candidate.
-                candidates.append({
-                    "head": "riichi",
-                    "prob": p_riichi * p_tile,
-                    "action": {"action": "lizhi", "tile": tile,
-                                "slot": discard_action.get("slot"),
-                                "extra": {"declare_on": tile}},
-                })
-                # Plain-discard-this-tile candidate.
-                candidates.append({
-                    "head": "discard",
-                    "prob": p_pass * p_tile,
-                    "action": discard_action,
-                })
         else:
-            for tile_idx, p_tile in ranked_tiles:
-                candidates.append({
-                    "head": "discard",
-                    "prob": p_tile,
-                    "action": _decode_action("discard", tile_idx, state),
-                })
+            for idx, p in _ranked(kan_probs):
+                candidates.append({"head": "kan", "prob": float(p),
+                                    "action": _decode_action("kan", int(idx), state)})
     elif riichi_probs is not None:
         # Riichi-confirmation event (options=['lizhi','pass']): no tile to
         # pick here — emit the binary head directly.

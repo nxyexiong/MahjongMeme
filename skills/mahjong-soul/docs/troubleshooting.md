@@ -49,6 +49,42 @@ await page.mouse.up();
 `{ error: 'button_not_found' }`, the call window already closed — re-inspect
 and pick from the new `state.actionable.options[]`.
 
+Alternative: use the wire-level dispatch documented in
+[action-vocabulary.md](action-vocabulary.md). For multi-chi, the wire
+path is more reliable — clicking `btn_chi` opens a sub-panel that the
+agent then has to click again, while
+`sendReq2MJ('FastTest', 'inputChiPengGang', {type:2, index:K})` commits
+the chosen combination in one shot.
+
+## Discard after chi silently fails / `can_discard` stuck at false
+
+You hit the **kuikae** (swap-call) rule. After chi-ing, the server
+rejects discarding:
+
+- the called tile itself (e.g. chi'd 3p with 2p+4p → can't discard 3p),
+- and for some chi positions, the swap-chi mate that would form a
+  different chi with the same partner pair.
+
+Symptoms: `inputOperation type=1` sent, no error returned client-side,
+but `mainrole.can_discard` flips to false and stays there until the
+round times out.
+
+Fix: after a chi commits (you see `mainrole.container_ming.mings` grow),
+DON'T immediately pick a tile from the just-formed chi range. Drop a
+safe tile from elsewhere in the hand first. The conservative rule:
+
+```text
+forbidden after chi on `called`:
+  the called tile,
+  AND if your partners were the LOWER two (e.g. 2p+3p on 4p): also called+3 (7p),
+  AND if your partners were the HIGHER two (e.g. 5p+6p on 4p): also called-3 (1p),
+  AND if your partners straddle (e.g. 3p+5p on 4p): no extra restriction.
+```
+
+In practice, drop your safest tile (honors, terminals, distant
+isolated tiles) right after a chi — never a tile in the same suit as
+the called tile.
+
 ## `inspect` times out (returns `{ timeout: true, … }`)
 
 The wait loop returns once `state.needs_my_action === true` OR `scene ===

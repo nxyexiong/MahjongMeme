@@ -285,24 +285,122 @@
           /^btn_(chi|chii|peng|pon|gang|kan|minkan|ankan|lizhi|liqi|riichi|hu|ron|zimo|tsumo|babei|kita|quxiao|pass|cancel|skip)$/i.test(n.name || '')
           && n.mouseEnabled
           && n.parent && /^container_btns?$/.test(n.parent.name || ''));
-        if (callBtns.length) {
-          needs = true; actionable.kind = 'call_window';
-          for (const b of callBtns) {
-            const nm = b.name.toLowerCase();
-            let act = 'pass';
-            if (/chi/.test(nm)) act = 'chi';
-            else if (/peng|pon/.test(nm)) act = 'pon';
-            else if (/gang|kan/.test(nm)) act = 'kan';
-            else if (/lizhi|liqi|riichi/.test(nm)) act = 'lizhi';
-            else if (/zimo|tsumo/.test(nm)) act = 'zimo';
-            else if (/hu|ron/.test(nm)) act = 'hu';
-            else if (/babei|kita/.test(nm)) act = 'kita';
-            actionable.options.push(actNode(act, b, b.name));
-          }
-        } else if (matchState && matchState.can_discard) {
+        // Classify each visible button. Two distinct modes:
+        //
+        //   (A) `can_discard === true`: it's the player's own turn, the
+        //       buttons are POST-DRAW SELF-ACTIONS (riichi, tsumo,
+        //       ankan, chakan, kita). The hand tiles ARE ALSO
+        //       discardable. Emit kind='discard' with hand-tile options
+        //       AND the special-action options merged in.
+        //
+        //   (B) `can_discard === false`: an opponent just discarded;
+        //       the buttons are CALL RESPONSES (chi, pon, kan_open,
+        //       ron). Emit kind='call_window' with those + pass.
+        //
+        // The previous logic short-circuited to call_window whenever
+        // ANY of these buttons were visible, which dropped the hand
+        // tiles on a riichi prompt and confused the executor.
+        function classifyBtn(b) {
+          const nm = (b.name || '').toLowerCase();
+          if (/chi/.test(nm)) return 'chi';
+          if (/peng|pon/.test(nm)) return 'pon';
+          if (/gang|kan/.test(nm)) return 'kan';
+          if (/lizhi|liqi|riichi/.test(nm)) return 'lizhi';
+          if (/zimo|tsumo/.test(nm)) return 'zimo';
+          if (/hu|ron/.test(nm)) return 'hu';
+          if (/babei|kita/.test(nm)) return 'kita';
+          if (/quxiao|cancel|pass|skip/.test(nm)) return 'pass';
+          return null;
+        }
+        // Pull the call-combination data either way; the UI panel
+        // exposes it consistently as long as a call window is open.
+        function attachCombinations(target) {
+          try {
+            const cp = window.uiscript && window.uiscript.UI_ChiPengHu
+              && window.uiscript.UI_ChiPengHu.Inst;
+            if (cp && cp._data) {
+              if (Array.isArray(cp._data.chi))  target.chi_combinations  = cp._data.chi.slice();
+              if (Array.isArray(cp._data.peng)) target.pon_combinations  = cp._data.peng.slice();
+              if (Array.isArray(cp._data.gang)) target.kan_combinations  = cp._data.gang.slice();
+              if (cp._data.hu  !== undefined)   target.hu_combinations   = cp._data.hu;
+              if (cp._data.liqi !== undefined)  target.liqi_combinations = cp._data.liqi;
+            }
+          } catch (e) {}
+        }
+
+        if (matchState && matchState.can_discard) {
           needs = true; actionable.kind = 'discard';
+          if (callBtns.length) attachCombinations(actionable);
+          // Pre-compute kan subtype options for own-turn. The Mahjong
+          // Soul UI uses a single "btn_gang" button regardless of
+          // whether the player has ankan (closed kan from drawn or
+          // hand quad) or chakan (added kan onto an existing open
+          // pon). The wire `type` differs: 4 for ankan, 6 for chakan
+          // (5 is minkan from an opponent's discard, which CANNOT
+          // happen on own-turn — passing type=5 here silently locks
+          // up the round).
+          //
+          // Distinguish per kan_combinations[] tile by checking
+          // whether the player already has an open pon of that tile.
+          // `meld.type` from mjcore: 0=chi, 1=peng, 2=ming-gang,
+          // 3=add-gang (chakan), 4=an-gang.
+          const myMelds = (matchState.melds && matchState.melds[matchState.my_seat]) || [];
+          function ponTiles() {
+            const out = {};
+            for (const m of myMelds) {
+              if (!m || !Array.isArray(m.tiles) || m.tiles.length !== 3) continue;
+              if (m.type !== 1 && m.type !== 'peng' && m.type !== 'pon') continue;
+              // 3 identical tiles (modulo red-five marker).
+              const norm = m.tiles[0] && m.tiles[0].replace ? m.tiles[0].replace(/\*$/, '').replace(/^0/, '5') : m.tiles[0];
+              out[norm] = true;
+            }
+            return out;
+          }
+          function firstTileOf(combo) {
+            if (!combo) return null;
+            const s = String(combo).split('|')[0] || '';
+            return s.replace(/\*$/, '').replace(/^0/, '5');
+          }
+          const pons = ponTiles();
+          let kanOpts = [];
+          if (Array.isArray(actionable.kan_combinations) && actionable.kan_combinations.length) {
+            for (const combo of actionable.kan_combinations) {
+              const tile = firstTileOf(combo);
+              const subtype = pons[tile] ? 'kan_added' : 'kan_closed';
+              kanOpts.push({ tile, subtype, combo });
+            }
+          }
+          // Surface any post-draw self-action buttons FIRST so they
+          // show up at the top of the option list.
+          for (const b of callBtns) {
+            const act = classifyBtn(b);
+            if (act === 'lizhi' || act === 'zimo' || act === 'kita') {
+              actionable.options.push(actNode(act, b, b.name));
+            } else if (act === 'kan') {
+              if (kanOpts.length) {
+                for (const k of kanOpts) {
+                  actionable.options.push(actNode('kan', b, b.name,
+                    { subtype: k.subtype, tile: k.tile, combination: k.combo }));
+                }
+              } else {
+                // No combinations data — emit a single closed-kan
+                // option (most common own-turn case) so the executor
+                // doesn't fall back to kan_open.
+                actionable.options.push(actNode('kan', b, b.name,
+                  { subtype: 'kan_closed' }));
+              }
+            }
+          }
+          // Then one option per hand tile.
           for (let i = 0; i < matchState.hand.length; i++) {
             actionable.options.push({ action: 'discard', tile: matchState.hand[i], slot: i });
+          }
+        } else if (callBtns.length) {
+          needs = true; actionable.kind = 'call_window';
+          attachCombinations(actionable);
+          for (const b of callBtns) {
+            const act = classifyBtn(b) || 'pass';
+            actionable.options.push(actNode(act, b, b.name));
           }
         }
       } else if (scene === 'main_lobby' || scene === 'friendly_landing' || scene === 'room_lobby') {

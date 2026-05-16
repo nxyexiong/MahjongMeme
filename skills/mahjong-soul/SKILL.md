@@ -161,6 +161,7 @@ async (page) => {
 | `{do:'discard', tile:'5z'}`                 | Pick that tile from your hand and discard via `mainrole.setChoosePai + DoDiscardTile`. No DOM clicks, no race. Tile strings: `Nm` man, `Np` pin, `Ns` sou, `Nz` honor (1z=E,2z=S,3z=W,4z=N,5z=白,6z=發,7z=中); red fives are `5m*`/`5p*`/`5s*`. |
 | `{do:'click', button_name:'btn_peng'}`      | Resolve the named visible+mouseEnabled Laya node, click via native CDP mouse. Use for call windows, modals, lobby buttons, add-AI seats, etc. |
 | `{do:'click', client:{x,y}}`                | Click an absolute viewport coord. Use the `client` field that came back in `state.actionable.options[]`. |
+| `{do:'call', type:'chi', index:K}`          | Send the wire packet `inputChiPengGang {type:2, index:K}`. For multi-chi, `K` is the position in `state.actionable.chi_combinations[]` (see docs/action-vocabulary.md "Wire-level dispatch"). |
 | `{do:'set_room_setting', group_id, option_index}` or `{…, option_label}` | Set a Create-Room toggle programmatically via `ui.allLines[gid].tabGroup.selectedIndex = idx`. Same code path as a human click; works for hidden advanced groups too. |
 
 After executing the action, the inline wait loop polls
@@ -274,8 +275,12 @@ them in the scripts.
    fixed to surface it.
 3. Re-run `init.js` and `hook_events.js` after every `navigate` or full
    page reload — `window.__mj` and the network hooks are wiped.
-4. Do not call `app.NetAgent.sendReq2MJ` to fabricate packets or mutate
-   `GameMgr.Inst` fields. The server cross-validates every action.
+4. Do not call `app.NetAgent.sendReq2MJ` to FABRICATE STATE (fake an
+   opponent's discard, mutate `GameMgr.Inst` fields, etc.). The server
+   cross-validates every action.
+   It IS safe to use `sendReq2MJ` to dispatch YOUR OWN action with the
+   correct body — those are the same packets the UI buttons send. See
+   the "Wire-level dispatch" section of `docs/action-vocabulary.md`.
 5. The human owns the account. Confirm major actions (real-money ranked
    queue, surrendering, leaving a paid table) with `ask_user` first.
 

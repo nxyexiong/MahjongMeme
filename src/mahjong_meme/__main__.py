@@ -84,6 +84,30 @@ def build_parser() -> argparse.ArgumentParser:
              "Default: artifacts/myai/best.pt",
     )
     p.add_argument(
+        "--play",
+        action="store_true",
+        help="Auto-play mode: execute the MyAI advisor's chosen action on "
+             "every decision point. Falls back through top-K if the primary "
+             "move fails. No confirmation, no ranked-vs-friend distinction, "
+             "does not stop at match end.",
+    )
+    p.add_argument(
+        "--delay-mode",
+        choices=("instant", "random"),
+        default="instant",
+        help="When --play is set, controls per-action delay. 'instant' acts "
+             "immediately; 'random' waits a uniform random delay in [1, 5] "
+             "seconds before each action. Default: instant.",
+    )
+    p.add_argument(
+        "--auto-ron",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When --play is set, always take a ron/tsumo when it's a legal "
+             "option, overriding the model. Use --no-auto-ron to let the "
+             "model decide. Default: enabled.",
+    )
+    p.add_argument(
         "--no-launch",
         action="store_true",
         help="Don't spawn a browser; attach to an already-running browser "
@@ -142,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
             poll_interval_s=args.poll_interval,
             verbose_events=args.verbose_events,
             advisors=advisors,
+            play=args.play,
+            delay_mode=args.delay_mode,
+            auto_ron=args.auto_ron,
         )
     except KeyboardInterrupt:
         print("\n[mj] interrupted by user; exiting (browser left running)")

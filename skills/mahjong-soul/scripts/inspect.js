@@ -20,6 +20,9 @@
     // action: { do: 'discard', slot: 12 },
     // action: { do: 'click', button_name: 'btn_peng' },
     // action: { do: 'click', client: { x: 729, y: 481 } },
+    // action: { do: 'call', type: 'chi', index: 1 },        // wire-level chi/pon/kan/ron
+    // action: { do: 'call', type: 'pon' },                  // index defaults to 0
+    // action: { do: 'call', type: 'pass' },                 // cancel call window
     // wait_max_seconds: 180,
   };
 
@@ -82,6 +85,49 @@
       await page.mouse.down();
       await page.waitForTimeout(80);
       await page.mouse.up();
+    } else if (a.do === 'call') {
+      // Wire-level call dispatch. Bypasses the DOM click. See
+      // docs/action-vocabulary.md "Wire-level dispatch" for full body
+      // table. Uses `app.NetAgent.sendReq2MJ('FastTest', ...)`.
+      const r = await page.evaluate((act) => {
+        try {
+          const TYPE_BY_NAME = {
+            'chi':2,'eat':2,'pon':3,'peng':3,
+            'an_gang':4,'kan_closed':4,
+            'ming_gang':5,'kan_open':5,
+            'add_gang':6,'kan_added':6,
+            'liqi':7,'riichi':7,
+            'zimo':8,'tsumo':8,
+            'rong':9,'ron':9,'hu':9,
+            'babei':11,'kita':11,
+          };
+          if (act.type === 'pass' || act.type === 'cancel') {
+            app.NetAgent.sendReq2MJ('FastTest', 'inputChiPengGang',
+              { cancel_operation: true, timeuse: 1 }, function () {});
+            return { ok: true, sent: 'cancel_operation' };
+          }
+          const wantType = TYPE_BY_NAME[(act.type || '').toLowerCase()];
+          if (wantType === undefined) {
+            return { ok: false, err: 'unknown_call_type', type: act.type };
+          }
+          const idx = (typeof act.index === 'number') ? act.index : 0;
+          const wireMethod = (wantType === 1 || wantType === 7
+                              || wantType === 8 || wantType === 11)
+            ? 'inputOperation'
+            : 'inputChiPengGang';
+          const body = { type: wantType, index: idx, timeuse: 1 };
+          app.NetAgent.sendReq2MJ('FastTest', wireMethod, body,
+            function () {});
+          try {
+            const O = game.MJNetMgr.Inst.netMJ.notifyHander.handlers['.lq.ActionPrototype']['0'].caller;
+            if (O && O.ClearOperationShow) O.ClearOperationShow();
+          } catch (e) {}
+          return { ok: true, sent: { method: wireMethod, body } };
+        } catch (e) {
+          return { ok: false, err: String(e && e.message || e) };
+        }
+      }, a);
+      if (!r.ok) return { error: 'call_failed', details: r };
     } else if (a.do === 'set_room_setting') {
       // Set a Create Room dialog toggle programmatically by writing to the
       // corresponding `tabGroup.selectedIndex` on the matching line. This

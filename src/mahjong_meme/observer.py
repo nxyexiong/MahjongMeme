@@ -320,6 +320,72 @@ def _trainer_advice(state: dict[str, Any]) -> str | None:
     return f"[trainer] {head}\n{a.summary}"
 
 
+def _maybe_auto_play(page, state: dict[str, Any], advisors: list,
+                     executor, *, auto_ron: bool = True, log=print) -> None:
+    """Auto-play hook called from the poll loop when the player needs
+    to make a decision. Pulls myai's top-K, hands them to the executor.
+
+    When ``auto_ron`` is True (default), prepends a ``hu``/``zimo``
+    candidate at probability 1.0 whenever such an option is legal —
+    forcing the win even if the model would have passed (e.g. cheap
+    damaten that we'd rather just cash in).
+    """
+    kind = (state.get("actionable") or {}).get("kind")
+    if kind not in ("discard", "call_window"):
+        return
+
+    options = (state.get("actionable") or {}).get("options") or []
+
+    # Auto-ron override: if a win is legal, prepend it to the candidate
+    # list. The executor's fallback chain will then attempt the win
+    # first; if it somehow fails (e.g. furiten or stale UI), we still
+    # fall through to whatever myai chose.
+    forced: list[dict] = []
+    if auto_ron:
+        for opt in options:
+            a = (opt or {}).get("action")
+            if a in ("hu", "zimo"):
+                forced.append({
+                    "action": {"action": a},
+                    "prob": 1.0,
+                    "_forced": "auto-ron",
+                })
+
+    # Find the MyAI advisor — auto-play always follows it.
+    myai = next((a for a in advisors if a.name == "myai"), None)
+    if myai is None and not forced:
+        return
+
+    candidates: list[dict] = list(forced)
+    if myai is not None:
+        try:
+            advice = myai.advise(state)
+        except Exception as e:
+            log(f"[mj.play] myai.advise raised: {e!r}")
+            advice = None
+        if advice is not None:
+            topk = (advice.extras or {}).get("topk") or []
+            for entry in topk:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    action, prob = entry[0], entry[1]
+                    candidates.append({"action": action, "prob": float(prob)})
+            if not topk and advice.action:
+                candidates.append({"action": advice.action, "prob": 1.0})
+
+    if not candidates:
+        log("[mj.play] no candidates available")
+        return
+
+    if forced:
+        log(f"[mj.play] auto-ron: forcing {forced[0]['action']['action']} "
+            f"to top of candidate list")
+
+    try:
+        executor.execute(page, state, candidates)
+    except Exception as e:
+        log(f"[mj.play] executor raised: {e!r}")
+
+
 def print_events(events: list[dict[str, Any]], *, log=print) -> None:
     for ev in events:
         log(f"[mj.evt] seq={ev['seq']} {ev['dir']:11} {ev['name']}  "
@@ -336,6 +402,9 @@ def run(
     poll_interval_s: float = 1.0,
     verbose_events: bool = False,
     advisors: list | None = None,
+    play: bool = False,
+    delay_mode: str = "instant",
+    auto_ron: bool = True,
     log=print,
 ) -> None:
     """Attach to the browser, install the observer, then loop forever.
@@ -348,11 +417,38 @@ def run(
     advisors
         Optional list of ``Advisor`` instances. When None, the default
         registry is used (trainer + myai if checkpoint is available).
+    play
+        When True, AUTO-PLAY mode. On every actionable state we ask the
+        MyAI advisor for its top-K candidates and execute them in order
+        until one succeeds (fallback chain). No safety rails: runs
+        continuously, no ranked-vs-friend check, no confirmation, does
+        not stop when a match ends.
+    delay_mode
+        ``"instant"`` (default) executes immediately. ``"random"`` waits
+        a uniform random delay in [1.0, 5.0] seconds before each action.
+    auto_ron
+        When True (default), any legal ron (``hu``) or tsumo (``zimo``)
+        option is ALWAYS executed, regardless of what the model
+        recommends. The override prepends the win action to the top-K
+        list so the executor tries it first. Set False to let the model
+        decide (it may pass a 1-han damaten ron, for example).
     """
     if advisors is None:
         from mahjong_meme.advisors import build_default_advisors
         advisors = build_default_advisors()
     log(f"[mj] advisors loaded: {[a.name for a in advisors]}")
+
+    executor = None
+    if play:
+        from mahjong_meme.player.executor import Executor
+        executor = Executor(log=log, delay_mode=delay_mode)
+        log(f"[mj.play] auto-play ENABLED. policy=myai delay={delay_mode}"
+            f" auto-ron={'on' if auto_ron else 'off'}")
+        # Sanity: warn if myai isn't loaded so user knows what's happening.
+        if not any(a.name == "myai" for a in advisors):
+            log("[mj.play] WARN: myai advisor not loaded; no actions will "
+                "be executed. Set --myai-checkpoint or "
+                "MAHJONG_MEME_MYAI_CHECKPOINT.")
 
     wait_for_cdp(cdp_url)
 
@@ -434,6 +530,13 @@ def run(
                 print_state(state, advisors=advisors, log=log)
             elif scene_changed and last_state is not None:
                 log(f"[mj] scene → {scene}")
+
+            # Auto-play: execute the myai advisor's top-K candidates.
+            # Triggered on the same conditions that print a state (rising
+            # edge of needs_my_action OR kind transition).
+            if play and executor is not None and should_print:
+                _maybe_auto_play(page, state, advisors, executor,
+                                  auto_ron=auto_ron, log=log)
 
             # Stream events
             new_seq = int(state.get("event_seq") or 0)

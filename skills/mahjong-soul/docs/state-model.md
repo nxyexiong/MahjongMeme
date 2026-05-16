@@ -136,8 +136,29 @@ These ARE DOM-level: visible Laya buttons under `container_btn` /
 | kita   | `btn_babei`, `btn_kita` (sanma) |
 | pass   | `btn_quxiao`, `btn_pass`, `btn_skip`, `btn_cancel` |
 
-The agent clicks them via Playwright's native `page.mouse` (synthesized
-events fail silently on the 3D scene).
+The agent can click them via Playwright's native `page.mouse` (synthesized
+events fail silently on the 3D scene), OR send the wire packet directly
+via `app.NetAgent.sendReq2MJ('FastTest', 'inputChiPengGang', ...)` — see
+[action-vocabulary.md](action-vocabulary.md) "Wire-level dispatch".
+
+### Call combinations source (`UI_ChiPengHu._data`)
+
+When a call window is open, the legal combinations live on the UI panel:
+
+```js
+uiscript.UI_ChiPengHu.Inst._data === {
+  chi:  ["3p|5p"],          // partners; called tile inferred
+  chi:  ["2p|3p", "3p|5p"], // multi-chi → 2 combos
+  peng: ["5z|5z"],
+  gang: ["3m|3m|3m"],
+}
+```
+
+Each entry is a `'|'`-joined string of the partner tiles you commit. For
+multi-chi the wire `index` field is the position in `_data.chi[]`.
+`state.actionable.kind === 'call_window'` carries these as
+`actionable.chi_combinations` etc. so the agent doesn't have to read the
+UI directly.
 
 ## Room state (`state.room`, `state.scene === 'room_lobby'`)
 

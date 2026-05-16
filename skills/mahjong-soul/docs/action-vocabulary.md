@@ -113,10 +113,87 @@ pre-classified by intent.
 | kita   | `btn_babei`, `btn_kita` (sanma north) |
 | pass   | `btn_quxiao`, `btn_pass`, `btn_skip`, `btn_cancel` |
 
-These must be clicked via Playwright's native mouse (synthesized DOM events
-don't reach Laya's 3D raycaster). The agent passes
-`inspect({ do: 'click', button_name: 'btn_peng' })` and `inspect.js` does
-`page.mouse.move/down/up`.
+You can dispatch either by **clicking the button** (`inspect({do:'click',
+button_name})`) or by **sending the wire packet directly** (see "Wire-level
+dispatch" below — preferred, especially for multi-chi where the click
+opens a sub-panel).
+
+Click path uses Playwright's native mouse (synthesized DOM events don't
+reach Laya's 3D raycaster). `inspect.js` already does the
+`page.mouse.move/down/up` sequence for you when you pass
+`{do:'click', button_name}`.
+
+## Wire-level dispatch (preferred for in-match decisions)
+
+Every in-match decision can be sent via the WebSocket sender
+`app.NetAgent.sendReq2MJ(namespace, method, body, cb)` — no DOM clicks
+needed.
+
+**Namespace gotcha**: the receiver-side notify names use `.lq.FastTest.*`
+(visible in the event buffer), but `sendReq2MJ` takes the **bare**
+`'FastTest'`. Using `'.lq.FastTest'` throws
+`ERR_SERVICE_NOT_FOUND, name=FastTest`.
+
+Two wire methods cover all in-match input:
+
+- `inputOperation`   — discard / riichi / tsumo / ankan / kita / cancel-own-turn
+- `inputChiPengGang` — chi / pon / open-kan / chakan / ron / pass-call
+
+Op-type enum (`mjcore.E_PlayOperation`):
+
+| Code | Name        | Sent via            |
+|------|-------------|---------------------|
+| 1    | dapai       | `inputOperation`    |
+| 2    | eat (chi)   | `inputChiPengGang`  |
+| 3    | peng (pon)  | `inputChiPengGang`  |
+| 4    | an_gang     | `inputChiPengGang`  |
+| 5    | ming_gang   | `inputChiPengGang`  |
+| 6    | add_gang    | `inputChiPengGang`  |
+| 7    | liqi        | `inputOperation`    |
+| 8    | zimo        | `inputOperation`    |
+| 9    | rong (ron)  | `inputChiPengGang`  |
+| 11   | babei (kita)| `inputOperation`    |
+
+### Verified wire bodies
+
+| Intent          | Body                                                                            |
+|-----------------|---------------------------------------------------------------------------------|
+| Discard a tile  | `{type:1, tile:"5z", moqie:false, timeuse:N, tile_state:0}` via `inputOperation` |
+| Riichi declare  | `{type:7, tile, moqie, timeuse}` via `inputOperation` (use `mainrole.Action_LiQi(tile.val, moqie, false)` wrapper) |
+| Tsumo           | `{type:8, index:0, timeuse:1}` via `inputOperation` |
+| Kita (sanma N)  | `{type:11, index:0, timeuse:1}` via `inputOperation` |
+| Cancel own turn | `{cancel_operation:true, timeuse:N}` via `inputOperation` |
+| Chi (single)    | `{type:2, index:0, timeuse:1}` via `inputChiPengGang` |
+| Chi (multi)     | `{type:2, index:K, timeuse:1}` where K is the position in `uiscript.UI_ChiPengHu.Inst._data.chi[]` |
+| Pon             | `{type:3, index:0, timeuse:1}` via `inputChiPengGang` |
+| Kan (open)      | `{type:5, index:0, timeuse:1}` via `inputChiPengGang` |
+| Kan (closed)    | `{type:4, index:K, timeuse:1}` — multi-ankan: K = position in `_data.gang[]` |
+| Kan (added)     | `{type:6, index:0, timeuse:1}` via `inputChiPengGang` |
+| Ron             | `{type:9, index:0, timeuse:1}` via `inputChiPengGang` |
+| Pass call window| `{cancel_operation:true, timeuse:N}` via `inputChiPengGang` |
+
+### Where the call combinations live
+
+`uiscript.UI_ChiPengHu.Inst._data` holds the legal combinations for
+the currently-open call window:
+
+```js
+_data = {
+  chi:  ["3p|5p"],          // single chi  — index 0
+  chi:  ["2p|3p", "3p|5p"], // two chi    — index 0 or 1
+  peng: ["5z|5z"],          // pon        — index 0
+  gang: ["3m|3m|3m"],       // kan tile   — index per entry
+}
+```
+
+Each entry is a `'|'`-joined string of the partner tiles you commit (NOT
+including the called tile). For chi, you pick by partner pair. For
+ankan, by the called tile.
+
+`mainrole.operation.operation_list` ALSO contains this in protobuf form,
+but the UI panel's `_data` is canonically populated whenever the panel
+is visible. Read either; we prefer `_data` because it survives all UI
+lifecycle quirks.
 
 ## Discard
 
@@ -210,10 +287,24 @@ already auto-unwrapped from `lq.ActionPrototype`.
 
 - Do NOT echo / persist `summary_json` for `prepareLogin`, `oauth2Login`,
   `emailLogin`, `loginVerifyCode`, or `enterGame` — they carry tokens.
-- Do NOT call `app.NetAgent.sendReq2MJ` to fabricate packets or mutate
-  `GameMgr.Inst` fields. The server cross-validates every action.
 - Do NOT click hand tiles via `page.mouse` for discards — use the match
   controller (`setChoosePai` + `DoDiscardTile`). The 3D raycaster path is
   flaky enough to time you out.
+- Do NOT discard a kuikae-restricted tile right after a chi (the called
+  tile + same-suit swap-chi mate). The server silently rejects it and
+  leaves `can_discard=true` until the round ages out. Always inspect
+  `mainrole.hand[i]` flags after a chi (or just retry with a different
+  candidate from your top-K).
 - Do NOT loop on `inspect` faster than ~1 s; `computeState()` is cheap but
   the polling loop inside `inspect.js` already does this.
+
+## Calling `sendReq2MJ` for actions: when it's safe
+
+The blanket "don't call sendReq2MJ" warning applies to **fabricating
+state** — e.g. trying to fake an opponent's discard or mutate
+`GameMgr.Inst`. The server cross-validates every action.
+
+What IS supported and verified safe: the wire bodies listed in the
+"Wire-level dispatch" table above. They're literally the same packets
+the UI buttons issue, just sent without the click. The server treats
+them identically to a button press.
