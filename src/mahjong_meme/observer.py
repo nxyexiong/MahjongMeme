@@ -198,25 +198,32 @@ def _render_advisor_panel(state: dict[str, Any],
                           advisors: list) -> str:
     """Render a multi-line tri-rec panel comparing each advisor's opinion.
 
-    Returns an empty string when no advisor has anything to say on this
-    state (e.g. pure observer / non-actionable).
+    Returns a non-empty string whenever the state has an actionable kind.
+    When an advisor has no opinion on this kind, we still render
+    ``[name] (no opinion)`` so the user knows which advisor is silent
+    vs absent.
     """
-    from mahjong_meme.advisors import actions_equivalent
+    from mahjong_meme.advisors import Advice, actions_equivalent
 
-    advices = []
+    actionable = state.get("actionable") or {}
+    kind = actionable.get("kind")
+    if kind not in ("discard", "call_window"):
+        return ""
+
+    advices: list = []
     for adv in advisors:
         try:
             a = adv.advise(state)
         except Exception as e:
-            from mahjong_meme.advisors import Advice
             a = Advice(name=adv.name, summary=f"error: {e!r}")
-        if a is not None:
-            advices.append(a)
+        if a is None:
+            # Surface "no opinion" so the empty case is informative
+            # instead of silent. Real opinions float to the top below.
+            a = Advice(name=adv.name, summary="(no opinion on this state)")
+        advices.append(a)
     if not advices:
-        return ""
+        return f"[advisors] none loaded; state kind={kind}"
 
-    # The first advisor with a concrete action becomes the "reference"
-    # we compare others against for the AGREES / DISAGREES flag.
     reference_action = next(
         (a.action for a in advices if a.action is not None), None
     )
@@ -226,7 +233,9 @@ def _render_advisor_panel(state: dict[str, Any],
     for a in advices:
         head_action = _format_action(a.action) if a.action else "(no opinion)"
         verdict = ""
-        if a.action is not None and reference_action is not None and a is not advices[0]:
+        if (a.action is not None
+                and reference_action is not None
+                and a is not advices[0]):
             verdict = (
                 "  AGREES" if actions_equivalent(a.action, reference_action)
                 else "  DISAGREES"
@@ -253,10 +262,19 @@ def _format_action(action: dict | None) -> str:
     if a == "pon":
         return "pon"
     if a == "kan":
-        sub = (action.get("extra") or {}).get("subtype")
-        return f"kan:{sub}" if sub else "kan"
+        extra = action.get("extra") or {}
+        sub = extra.get("subtype")
+        tile = action.get("tile") or extra.get("tile")
+        if sub and tile:
+            return f"kan:{sub} on {tile}"
+        if sub:
+            return f"kan:{sub}"
+        if tile:
+            return f"kan on {tile}"
+        return "kan"
     if a == "lizhi":
-        return "riichi"
+        tile = action.get("tile") or (action.get("extra") or {}).get("declare_on")
+        return f"riichi on {tile}" if tile else "riichi"
     if a == "hu":
         return "ron"
     if a == "zimo":

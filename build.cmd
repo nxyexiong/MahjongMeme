@@ -45,7 +45,7 @@ if not exist "%BUILD%" mkdir "%BUILD%"
 echo [build] running pyinstaller
 "%PY%" -m PyInstaller ^
   --noconfirm ^
-  --onefile ^
+  --onedir ^
   --console ^
   --name mahjong-meme ^
   --collect-all playwright ^
@@ -56,14 +56,18 @@ echo [build] running pyinstaller
   --specpath "%BUILD%\_work" ^
   "%SRC%\mahjong_meme\__main__.py" || goto :err
 
-if not exist "%BUILD%\mahjong-meme.exe" (
+if not exist "%BUILD%\mahjong-meme\mahjong-meme.exe" (
   echo [build] ERROR: pyinstaller finished but mahjong-meme.exe is missing.
   exit /b 1
 )
 
+REM Tidy: remove stale single-file exe from prior --onefile builds.
+if exist "%BUILD%\mahjong-meme.exe" del /q "%BUILD%\mahjong-meme.exe"
+
 echo.
-echo [build] OK: %BUILD%\mahjong-meme.exe
-for %%I in ("%BUILD%\mahjong-meme.exe") do echo [build]     size: %%~zI bytes
+echo [build] OK: %BUILD%\mahjong-meme\mahjong-meme.exe
+for %%I in ("%BUILD%\mahjong-meme\mahjong-meme.exe") do echo [build]     exe size: %%~zI bytes
+for /f "tokens=3" %%A in ('dir /s /-c "%BUILD%\mahjong-meme" ^| findstr /C:"File(s)"') do echo [build]     folder size: %%A bytes
 exit /b 0
 
 :err

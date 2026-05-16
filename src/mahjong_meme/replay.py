@@ -481,27 +481,41 @@ def _make_skip_choice() -> dict:
 
 
 def _meld_choice(mtype: str, label_tiles: list[str] | None = None) -> dict:
-    """Build a `choice` dict for a call (chi/pon/kan/nuki)."""
+    """Build a ``choice`` dict for a call (chi/pon/kan/nuki).
+
+    For kan types we additionally surface a normalized ``tile`` field
+    (red-five collapsed to its non-red form) so consumers know WHICH
+    tile is being declared on without parsing ``extra.tiles``.
+    """
+    tiles = list(label_tiles or [])
+    norm_tile = (tiles[0][:-1] if tiles and tiles[0].endswith("*") else tiles[0]) \
+        if tiles else None
+
     if mtype == "chi":
         return {"action": "chi",
-                "label": f"Chi {'+'.join(label_tiles)}" if label_tiles else "Chi",
-                "extra": {"tiles": list(label_tiles or [])}}
+                "label": f"Chi {'+'.join(tiles)}" if tiles else "Chi",
+                "extra": {"tiles": tiles}}
     if mtype == "pon":
         return {"action": "pon",
-                "label": f"Pon {label_tiles[0]}" if label_tiles else "Pon",
-                "extra": {"tiles": list(label_tiles or [])}}
+                "label": f"Pon {tiles[0]}" if tiles else "Pon",
+                "tile": norm_tile,
+                "extra": {"tiles": tiles}}
     if mtype == "kan_open":
         return {"action": "kan", "label": "Open Kan",
-                "extra": {"subtype": "kan_open", "tiles": list(label_tiles or [])}}
+                "tile": norm_tile,
+                "extra": {"subtype": "kan_open", "tiles": tiles}}
     if mtype == "kan_closed":
         return {"action": "kan", "label": "Ankan",
-                "extra": {"subtype": "kan_closed", "tiles": list(label_tiles or [])}}
+                "tile": norm_tile,
+                "extra": {"subtype": "kan_closed", "tiles": tiles}}
     if mtype == "kan_added":
         return {"action": "kan", "label": "Chakan",
-                "extra": {"subtype": "kan_added", "tiles": list(label_tiles or [])}}
+                "tile": norm_tile,
+                "extra": {"subtype": "kan_added", "tiles": tiles}}
     if mtype == "nuki":
         return {"action": "kita", "label": "Kita",
-                "extra": {"tiles": list(label_tiles or [])}}
+                "tile": norm_tile,
+                "extra": {"tiles": tiles}}
     return {"action": "skip"}
 
 
@@ -568,6 +582,8 @@ def _observer_view(
 def _classify_event(
     rs: "_RoundState",
     elem: ET.Element,
+    *,
+    next_elem: ET.Element | None = None,
 ) -> tuple[str, int | None, dict, str, list[dict]]:
     """Return ``(event_kind, actor, actor_choice, actor_state_kind, actor_options)``
     for the upcoming XML element, computed against the *pre-apply* state.
@@ -667,7 +683,24 @@ def _classify_event(
         who = int(elem.get("who") or "0")
         step = int(elem.get("step") or "1")
         if step == 1:
-            choice = {"action": "lizhi", "label": "Riichi"}
+            # Look-ahead: a REACH step=1 is always immediately followed
+            # by the same seat's discard (which is the declaration tile).
+            # We attach that tile so the choice is fully specified for
+            # training / advisor display.
+            riichi_tile: str | None = None
+            if next_elem is not None:
+                ntag = next_elem.tag
+                if (len(ntag) >= 2 and ntag[0] in _DISCARD_TAGS
+                        and ntag[1:].isdigit()
+                        and _DISCARD_TAGS[ntag[0]] == who):
+                    try:
+                        riichi_tile = tenhou_to_string(int(ntag[1:]))
+                    except ValueError:
+                        riichi_tile = None
+            choice: dict = {"action": "lizhi", "label": "Riichi"}
+            if riichi_tile is not None:
+                choice["tile"] = riichi_tile
+                choice["extra"] = {"declare_on": riichi_tile}
             drawn = (
                 tenhou_to_string(rs.last_drawn[who])
                 if rs.last_drawn[who] is not None
@@ -955,13 +988,17 @@ def parse_tenhou_replay(
     # Pre-game/header XML tags that don't represent gameplay events.
     _SKIP_TAGS = {"SHUFFLE", "GO", "UN", "TAIKYOKU", "BYE"}
 
-    for event_index, elem in enumerate(root):
+    # Materialize once so we can peek at the next element (needed for
+    # REACH lookahead: the riichi declaration tile is on the next D###).
+    children = list(root)
+    for event_index, elem in enumerate(children):
         tag = elem.tag
         if tag in _SKIP_TAGS:
             continue
 
+        next_elem = children[event_index + 1] if event_index + 1 < len(children) else None
         event_kind, actor, actor_choice, actor_state_kind, actor_options = (
-            _classify_event(rs, elem)
+            _classify_event(rs, elem, next_elem=next_elem)
         )
         event_meta = {
             "index": event_index,

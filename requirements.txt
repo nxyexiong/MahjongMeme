@@ -1,4 +1,18 @@
 playwright>=1.40
 mahjong>=1.2
 numpy>=1.24
+
+# Torch: install the CUDA build for GPU training/inference, or fall back
+# to the default CPU wheels. Pick ONE of the following lines:
+#
+#   CUDA 12.6 (recommended if you have an NVIDIA GPU + recent driver):
+#     pip install torch --index-url https://download.pytorch.org/whl/cu126
+#
+#   CPU-only:
+#     pip install torch
+#
+# This requirements.txt installs the default index version. To install
+# CUDA torch instead, run the explicit pip command above before
+# `pip install -r requirements.txt` -- pip will skip the already-installed
+# version.
 torch>=2.0
